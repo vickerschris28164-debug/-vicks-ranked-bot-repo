@@ -138,6 +138,17 @@ client.once('ready', async () => {
           .setDescription('The player to view stats for')
           .setRequired(false)),
     new SlashCommandBuilder()
+      .setName('history')
+      .setDescription('View leaderboard or player stats for a past month')
+      .addStringOption(option =>
+        option.setName('month')
+          .setDescription('Month to look up (e.g. 2025-04). Leave blank to see all available months.')
+          .setRequired(false))
+      .addUserOption(option =>
+        option.setName('player')
+          .setDescription('Player to view stats for (leave blank for leaderboard)')
+          .setRequired(false)),
+    new SlashCommandBuilder()
       .setName('help')
       .setDescription('Show bot commands and usage'),
     new SlashCommandBuilder()
@@ -324,6 +335,85 @@ client.on('interactionCreate', async interaction => {
         });
       });
     });
+  } else if (commandName === 'history') {
+    const monthInput = interaction.options.getString('month');
+    const player = interaction.options.getUser('player');
+
+    if (!monthInput) {
+      db.all(`SELECT DISTINCT month FROM players ORDER BY month DESC`, [], (err, rows) => {
+        if (err) {
+          console.error('History months query error:', err);
+          return interaction.reply('Error fetching history.');
+        }
+        if (rows.length === 0) {
+          return interaction.reply('No historical data found yet.');
+        }
+        const embed = new EmbedBuilder()
+          .setTitle('Available Monthly Records')
+          .setColor(0x9B59B6)
+          .setDescription(rows.map(r => `• ${r.month}`).join('\n') + '\n\nUse `/history month:YYYY-MM` to view a specific month.');
+        interaction.reply({ embeds: [embed] });
+      });
+      return;
+    }
+
+    const monthRegex = /^\d{4}-\d{2}$/;
+    if (!monthRegex.test(monthInput)) {
+      return interaction.reply('Invalid month format. Please use `YYYY-MM` (e.g. `2025-04`).');
+    }
+
+    if (player) {
+      db.get(`SELECT points FROM players WHERE id = ? AND month = ?`, [player.id, monthInput], (err, playerRow) => {
+        if (err) {
+          console.error('History stats lookup error:', err);
+          return interaction.reply('Error fetching history.');
+        }
+        if (!playerRow) {
+          return interaction.reply(`${player.username} has no data for **${monthInput}**.`);
+        }
+
+        db.get(`SELECT COUNT(*) AS wins FROM matches WHERE winner_id = ? AND month = ?`, [player.id, monthInput], (err2, winsRow) => {
+          if (err2) return interaction.reply('Error fetching history.');
+          db.get(`SELECT COUNT(*) AS losses FROM matches WHERE loser_id = ? AND month = ?`, [player.id, monthInput], (err3, lossesRow) => {
+            if (err3) return interaction.reply('Error fetching history.');
+
+            const wins = winsRow.wins || 0;
+            const losses = lossesRow.losses || 0;
+            const totalMatches = wins + losses;
+            const winRate = totalMatches === 0 ? '0%' : `${Math.round((wins / totalMatches) * 100)}%`;
+
+            const embed = new EmbedBuilder()
+              .setTitle(`${player.username}'s Stats — ${monthInput}`)
+              .setColor(0x9B59B6)
+              .addFields(
+                { name: 'Points', value: `${playerRow.points}`, inline: true },
+                { name: 'Wins', value: `${wins}`, inline: true },
+                { name: 'Losses', value: `${losses}`, inline: true },
+                { name: 'Win Rate', value: `${winRate}`, inline: true }
+              );
+            interaction.reply({ embeds: [embed] });
+          });
+        });
+      });
+    } else {
+      db.all(`SELECT name, points FROM players WHERE month = ? ORDER BY points DESC LIMIT 10`, [monthInput], (err, rows) => {
+        if (err) {
+          console.error('History leaderboard query error:', err);
+          return interaction.reply('Error fetching history.');
+        }
+
+        const embed = new EmbedBuilder()
+          .setTitle(`Leaderboard — ${monthInput}`)
+          .setColor(0x9B59B6);
+
+        if (rows.length === 0) {
+          embed.setDescription(`No data found for **${monthInput}**.`);
+        } else {
+          embed.setDescription(rows.map((row, i) => `${i + 1}. ${row.name}: ${row.points} points`).join('\n'));
+        }
+        interaction.reply({ embeds: [embed] });
+      });
+    }
   } else if (commandName === 'help') {
     const embed = new EmbedBuilder()
       .setTitle('Hideout TCG Ranked Bot Help')
@@ -334,6 +424,7 @@ client.on('interactionCreate', async interaction => {
         { name: '/report_match', value: 'Report a match result with winner and loser.', inline: false },
         { name: '/leaderboard', value: 'View the current monthly leaderboard.', inline: false },
         { name: '/stats', value: 'Show monthly stats for yourself or another player.', inline: false },
+        { name: '/history', value: 'View leaderboard or player stats for a past month. Leave month blank to list all available months.', inline: false },
         { name: '/reset_monthly', value: 'Reset the monthly leaderboard (Admin only).', inline: false },
         { name: '/undo_match', value: 'Undo the last match for a player (Admin only).', inline: false },
         { name: '/set_score', value: 'Set a player score manually (Admin only).', inline: false }
