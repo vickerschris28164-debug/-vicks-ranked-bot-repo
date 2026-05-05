@@ -25,10 +25,11 @@ const db = new sqlite3.Database(dbPath);
 // Initialize database
 db.serialize(() => {
   db.run(`CREATE TABLE IF NOT EXISTS players (
-    id TEXT PRIMARY KEY,
+    id TEXT,
     name TEXT,
     points INTEGER DEFAULT 0,
-    month TEXT
+    month TEXT,
+    PRIMARY KEY (id, month)
   )`);
 
   db.run(`CREATE TABLE IF NOT EXISTS matches (
@@ -39,12 +40,63 @@ db.serialize(() => {
     timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
     month TEXT
   )`);
+
+  db.all(`PRAGMA table_info(players)`, (err, rows) => {
+    if (err) {
+      return console.error('Player table info error:', err);
+    }
+
+    const hasCompositePK = rows.some(row => row.name === 'month' && row.pk === 2);
+    if (!hasCompositePK && rows.length > 0) {
+      console.log('Migrating players table to use composite primary key (id, month)...');
+      db.run(`ALTER TABLE players RENAME TO players_old`, err2 => {
+        if (err2) {
+          return console.error('Players migration rename error:', err2);
+        }
+
+        db.run(`CREATE TABLE IF NOT EXISTS players (
+          id TEXT,
+          name TEXT,
+          points INTEGER DEFAULT 0,
+          month TEXT,
+          PRIMARY KEY (id, month)
+        )`, err3 => {
+          if (err3) {
+            return console.error('Players migration create error:', err3);
+          }
+
+          db.run(`INSERT OR IGNORE INTO players (id, name, points, month) SELECT id, name, points, month FROM players_old`, err4 => {
+            if (err4) {
+              return console.error('Players migration insert error:', err4);
+            }
+
+            db.run(`DROP TABLE players_old`, err5 => {
+              if (err5) {
+                return console.error('Players migration drop old table error:', err5);
+              }
+              console.log('Players table migration completed.');
+            });
+          });
+        });
+      });
+    }
+  });
 });
 
 // Function to get current month
 function getCurrentMonth() {
   const now = new Date();
   return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+}
+
+function ensurePlayerForMonth(id, name, month, callback) {
+  db.run(`INSERT OR IGNORE INTO players (id, name, points, month) VALUES (?, ?, 0, ?)`, [id, name, month], function(err) {
+    if (err) return callback(err);
+    const inserted = this.changes > 0;
+    db.run(`UPDATE players SET name = ? WHERE id = ? AND month = ?`, [name, id, month], function(err2) {
+      callback(err2, inserted);
+    });
+  });
 }
 
 // Register slash commands
@@ -78,6 +130,16 @@ client.once('ready', async () => {
     new SlashCommandBuilder()
       .setName('leaderboard')
       .setDescription('View the monthly leaderboard'),
+    new SlashCommandBuilder()
+      .setName('stats')
+      .setDescription('Show leaderboard stats for a player')
+      .addUserOption(option =>
+        option.setName('player')
+          .setDescription('The player to view stats for')
+          .setRequired(false)),
+    new SlashCommandBuilder()
+      .setName('help')
+      .setDescription('Show bot commands and usage'),
     new SlashCommandBuilder()
       .setName('reset_monthly')
       .setDescription('Reset monthly leaderboard (Admin only)')
@@ -119,15 +181,15 @@ client.on('interactionCreate', async interaction => {
     const userName = interaction.user.username;
     const month = getCurrentMonth();
 
-    db.run(`INSERT OR IGNORE INTO players (id, name, points, month) VALUES (?, ?, 0, ?)`, [userId, userName, month], function(err) {
+    ensurePlayerForMonth(userId, userName, month, (err, inserted) => {
       if (err) {
-        console.error(err);
+        console.error('Register error:', err);
         return interaction.reply('Error registering. Please try again.');
       }
-      if (this.changes > 0) {
+      if (inserted) {
         interaction.reply('You have been registered for the leaderboard!');
       } else {
-        interaction.reply('You are already registered.');
+        interaction.reply('You are already registered for this month.');
       }
     });
   } else if (commandName === 'report_match') {
@@ -142,26 +204,24 @@ client.on('interactionCreate', async interaction => {
       return interaction.editReply('Winner and loser cannot be the same person!');
     }
 
-    // Check if both are registered
-    db.get(`SELECT id FROM players WHERE id = ? AND month = ?`, [winner.id, month], (err, row) => {
-      if (err || !row) {
-        if (err) console.error('Winner check error:', err);
-        return interaction.editReply('Winner is not registered. Please register first.');
+    ensurePlayerForMonth(winner.id, winner.username, month, (err) => {
+      if (err) {
+        console.error('Winner ensure error:', err);
+        return interaction.editReply('Error preparing winner registration.');
       }
-      db.get(`SELECT id FROM players WHERE id = ? AND month = ?`, [loser.id, month], (err2, row2) => {
-        if (err2 || !row2) {
-          if (err2) console.error('Loser check error:', err2);
-          return interaction.editReply('Loser is not registered. Please ensure both players are registered.');
+
+      ensurePlayerForMonth(loser.id, loser.username, month, (err2) => {
+        if (err2) {
+          console.error('Loser ensure error:', err2);
+          return interaction.editReply('Error preparing loser registration.');
         }
 
-        // Record match
         db.run(`INSERT INTO matches (winner_id, loser_id, reported_by, month) VALUES (?, ?, ?, ?)`, [winner.id, loser.id, reporter, month], function(err3) {
           if (err3) {
             console.error('Match insert error:', err3);
             return interaction.editReply('Error reporting match. Please try again.');
           }
 
-          // Update points
           db.run(`UPDATE players SET points = points + 1 WHERE id = ? AND month = ?`, [winner.id, month], function(err4) {
             if (err4) console.error('Winner points update error:', err4);
           });
@@ -197,6 +257,89 @@ client.on('interactionCreate', async interaction => {
 
       interaction.reply({ embeds: [embed] });
     });
+  } else if (commandName === 'stats') {
+    const player = interaction.options.getUser('player') || interaction.user;
+    const month = getCurrentMonth();
+
+    db.get(`SELECT points FROM players WHERE id = ? AND month = ?`, [player.id, month], (err, playerRow) => {
+      if (err) {
+        console.error('Stats player lookup error:', err);
+        return interaction.reply('Error fetching stats.');
+      }
+      if (!playerRow) {
+        return interaction.reply(`${player.username} is not registered for this month.`);
+      }
+
+      db.get(`SELECT COUNT(*) AS wins FROM matches WHERE winner_id = ? AND month = ?`, [player.id, month], (err2, winsRow) => {
+        if (err2) {
+          console.error('Stats wins query error:', err2);
+          return interaction.reply('Error fetching stats.');
+        }
+
+        db.get(`SELECT COUNT(*) AS losses FROM matches WHERE loser_id = ? AND month = ?`, [player.id, month], (err3, lossesRow) => {
+          if (err3) {
+            console.error('Stats losses query error:', err3);
+            return interaction.reply('Error fetching stats.');
+          }
+
+          db.all(`SELECT winner_id, loser_id FROM matches WHERE (winner_id = ? OR loser_id = ?) AND month = ? ORDER BY id DESC`, [player.id, player.id, month], (err4, matchRows) => {
+            if (err4) {
+              console.error('Stats streak query error:', err4);
+              return interaction.reply('Error fetching stats.');
+            }
+
+            let streak = 0;
+            let streakType = null;
+            for (const row of matchRows) {
+              const didWin = row.winner_id === player.id;
+              if (streakType === null) {
+                streakType = didWin ? 'win' : 'loss';
+                streak = 1;
+              } else if ((didWin && streakType === 'win') || (!didWin && streakType === 'loss')) {
+                streak += 1;
+              } else {
+                break;
+              }
+            }
+
+            const wins = winsRow.wins || 0;
+            const losses = lossesRow.losses || 0;
+            const totalMatches = wins + losses;
+            const winRate = totalMatches === 0 ? '0%' : `${Math.round((wins / totalMatches) * 100)}%`;
+            const streakText = streakType ? `${streak} ${streakType}${streak === 1 ? '' : 's'}` : 'None';
+
+            const embed = new EmbedBuilder()
+              .setTitle(`${player.username}'s Monthly Stats - ${month}`)
+              .setColor(0x00FF99)
+              .addFields(
+                { name: 'Points', value: `${playerRow.points}`, inline: true },
+                { name: 'Wins', value: `${wins}`, inline: true },
+                { name: 'Losses', value: `${losses}`, inline: true },
+                { name: 'Win Rate', value: `${winRate}`, inline: true },
+                { name: 'Current Streak', value: streakText, inline: true }
+              );
+
+            interaction.reply({ embeds: [embed] });
+          });
+        });
+      });
+    });
+  } else if (commandName === 'help') {
+    const embed = new EmbedBuilder()
+      .setTitle('Hideout TCG Ranked Bot Help')
+      .setColor(0xFFD700)
+      .setDescription('Use these commands to manage rankings and view stats.')
+      .addFields(
+        { name: '/register', value: 'Register yourself for the monthly leaderboard.', inline: false },
+        { name: '/report_match', value: 'Report a match result with winner and loser.', inline: false },
+        { name: '/leaderboard', value: 'View the current monthly leaderboard.', inline: false },
+        { name: '/stats', value: 'Show monthly stats for yourself or another player.', inline: false },
+        { name: '/reset_monthly', value: 'Reset the monthly leaderboard (Admin only).', inline: false },
+        { name: '/undo_match', value: 'Undo the last match for a player (Admin only).', inline: false },
+        { name: '/set_score', value: 'Set a player score manually (Admin only).', inline: false }
+      );
+
+    interaction.reply({ embeds: [embed], ephemeral: true });
   } else if (commandName === 'reset_monthly') {
     if (!interaction.member.permissions.has('Administrator')) {
       return interaction.reply('You do not have permission to reset the leaderboard.');
@@ -261,12 +404,9 @@ client.on('interactionCreate', async interaction => {
   }
 });
 
-// Monthly reset cron job (1st of every month at midnight)
+// Monthly rollover notifier (1st of every month at midnight)
 cron.schedule('0 0 1 * *', () => {
-  const currentMonth = getCurrentMonth();
-  // Reset points for the new month
-  db.run(`UPDATE players SET points = 0 WHERE month = ?`, [currentMonth]);
-  console.log('Monthly leaderboard reset.');
+  console.log('New monthly leaderboard cycle started:', getCurrentMonth());
 });
 
 // Ensure token exists

@@ -25,6 +25,8 @@ A Discord bot for managing ranked Pokémon TCG matches and monthly leaderboards 
 - `/register`: Register yourself for the leaderboard
 - `/report_match winner:@user loser:@user`: Report a match result
 - `/leaderboard`: View the current monthly leaderboard
+- `/stats [player:@user]`: View monthly stats for yourself or another player
+- `/help`: Show bot commands and usage
 - `/reset_monthly`: Reset the monthly leaderboard (Admin only)
 
 ## How It Works
