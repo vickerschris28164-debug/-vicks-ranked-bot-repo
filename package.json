@@ -1,0 +1,29 @@
+{
+  "name": "hidout-tcg-bot",
+  "version": "1.0.0",
+  "description": "Discord bot for HIDEOUT TCG ranked matches and monthly leaderboards",
+  "main": "bot.js",
+  "scripts": {
+    "start": "node bot.js",
+    "dev": "nodemon bot.js"
+  },
+  "dependencies": {
+    "discord.js": "^14.14.1",
+    "dotenv": "^17.4.2",
+    "node-cron": "^3.0.3",
+    "sqlite3": "^5.1.6"
+  },
+  "devDependencies": {
+    "nodemon": "^3.0.9"
+  },
+  "keywords": [
+    "discord",
+    "bot",
+    "pokemon",
+    "tcg",
+    "leaderboard"
+  ],
+  "author": "vickerschris28164-debug",
+  "license": "MIT"
+}
+  
