@@ -273,6 +273,18 @@ client.on('interactionCreate', async interaction => {
       return interaction.editReply('Winner and loser cannot be the same person!');
     }
 
+    if (winner.bot || loser.bot) {
+      return interaction.editReply('Bot accounts cannot be reported in matches.');
+    }
+
+    // Block if either player already has a pending confirmation in flight
+    for (const [, pending] of pendingMatches) {
+      if (pending.winner.id === winner.id || pending.winner.id === loser.id ||
+          pending.loser.id === winner.id || pending.loser.id === loser.id) {
+        return interaction.editReply('One of these players already has a match pending confirmation. Please wait for it to be resolved first.');
+      }
+    }
+
     const isAdmin = interaction.member.permissions.has('Administrator');
     const isInvolved = reporter === winner.id || reporter === loser.id;
     if (!isAdmin && !isInvolved) {
@@ -528,12 +540,29 @@ client.on('interactionCreate', async interaction => {
     }
 
     const newMonth = getCurrentMonth();
-    db.run(`UPDATE players SET points = 0 WHERE month = ?`, [newMonth], function(err) {
-      if (err) {
-        console.error(err);
-        return interaction.editReply('Error resetting leaderboard.');
-      }
-      interaction.editReply('Monthly leaderboard has been reset.');
+    db.serialize(() => {
+      db.run('BEGIN TRANSACTION');
+      db.run(`UPDATE players SET points = 0 WHERE month = ?`, [newMonth], function(err) {
+        if (err) {
+          db.run('ROLLBACK');
+          console.error('Reset points error:', err);
+          return interaction.editReply('Error resetting leaderboard.');
+        }
+        db.run(`DELETE FROM matches WHERE month = ?`, [newMonth], function(err2) {
+          if (err2) {
+            db.run('ROLLBACK');
+            console.error('Reset matches error:', err2);
+            return interaction.editReply('Error resetting match history.');
+          }
+          db.run('COMMIT', function(err3) {
+            if (err3) {
+              console.error('Reset commit error:', err3);
+              return interaction.editReply('Error saving reset. Please try again.');
+            }
+            interaction.editReply(`Monthly leaderboard for **${newMonth}** has been fully reset. All points and match history cleared.`);
+          });
+        });
+      });
     });
   } else if (commandName === 'undo_match') {
     await interaction.deferReply();
@@ -594,12 +623,18 @@ client.on('interactionCreate', async interaction => {
     const points = interaction.options.getInteger('points');
     const month = getCurrentMonth();
 
-    db.run(`UPDATE players SET points = ? WHERE id = ? AND month = ?`, [points, player.id, month], function(err) {
-      if (err) {
-        console.error(err);
-        return interaction.editReply('Error setting score.');
+    ensurePlayerForMonth(player.id, player.username, month, (ensureErr) => {
+      if (ensureErr) {
+        console.error('set_score ensure error:', ensureErr);
+        return interaction.editReply('Error preparing player record.');
       }
-      interaction.editReply(`${player.username}'s score has been set to ${points} points.`);
+      db.run(`UPDATE players SET points = ? WHERE id = ? AND month = ?`, [points, player.id, month], function(err) {
+        if (err) {
+          console.error(err);
+          return interaction.editReply('Error setting score.');
+        }
+        interaction.editReply(`${player.username}'s score has been set to ${points} points.`);
+      });
     });
   }
 });
@@ -653,13 +688,6 @@ client.on('warn', (info) => {
   console.warn('Discord warning:', info);
 });
 
-client.on('disconnect', () => {
-  console.warn('Bot disconnected from Discord. Attempting to reconnect...');
-});
-
-client.on('reconnecting', () => {
-  console.log('Bot reconnecting to Discord...');
-});
 
 // Catch unhandled promise rejections — prevents the process from crashing
 process.on('unhandledRejection', (reason, promise) => {
