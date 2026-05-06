@@ -1,4 +1,4 @@
-const { Client, GatewayIntentBits, SlashCommandBuilder, EmbedBuilder } = require('discord.js');
+const { Client, GatewayIntentBits, SlashCommandBuilder, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle } = require('discord.js');
 const sqlite3 = require('sqlite3').verbose();
 const cron = require('node-cron');
 const path = require('path');
@@ -93,6 +93,60 @@ function ensurePlayerForMonth(id, name, month, callback) {
     const inserted = this.changes > 0;
     db.run(`UPDATE players SET name = ? WHERE id = ? AND month = ?`, [name, id, month], function(err2) {
       callback(err2, inserted);
+    });
+  });
+}
+
+// Pending match confirmations — keyed by matchId
+const pendingMatches = new Map();
+
+// Shared function to commit a confirmed match to the database
+function recordMatch(winner, loser, reporter, month, interaction) {
+  ensurePlayerForMonth(winner.id, winner.username, month, (err) => {
+    if (err) {
+      console.error('Winner ensure error:', err);
+      return interaction.editReply({ content: 'Error preparing winner registration.', embeds: [], components: [] });
+    }
+    ensurePlayerForMonth(loser.id, loser.username, month, (err2) => {
+      if (err2) {
+        console.error('Loser ensure error:', err2);
+        return interaction.editReply({ content: 'Error preparing loser registration.', embeds: [], components: [] });
+      }
+      db.serialize(() => {
+        db.run('BEGIN TRANSACTION');
+        db.run(`INSERT INTO matches (winner_id, loser_id, reported_by, month) VALUES (?, ?, ?, ?)`, [winner.id, loser.id, reporter, month], function(err3) {
+          if (err3) {
+            db.run('ROLLBACK');
+            console.error('Match insert error:', err3);
+            return interaction.editReply({ content: 'Error recording match. Please try again.', embeds: [], components: [] });
+          }
+          db.run(`UPDATE players SET points = points + 1 WHERE id = ? AND month = ?`, [winner.id, month], function(err4) {
+            if (err4) {
+              db.run('ROLLBACK');
+              console.error('Winner points update error:', err4);
+              return interaction.editReply({ content: 'Error updating winner points. Match was not recorded.', embeds: [], components: [] });
+            }
+            db.run(`UPDATE players SET points = points - 1 WHERE id = ? AND month = ?`, [loser.id, month], function(err5) {
+              if (err5) {
+                db.run('ROLLBACK');
+                console.error('Loser points update error:', err5);
+                return interaction.editReply({ content: 'Error updating loser points. Match was not recorded.', embeds: [], components: [] });
+              }
+              db.run('COMMIT', function(err6) {
+                if (err6) {
+                  console.error('Commit error:', err6);
+                  return interaction.editReply({ content: 'Error saving match. Please try again.', embeds: [], components: [] });
+                }
+                const confirmedEmbed = new EmbedBuilder()
+                  .setTitle('Match Confirmed')
+                  .setColor(0x00C851)
+                  .setDescription(`**${winner.username}** defeated **${loser.username}**\n+1 point to ${winner.username} · -1 point to ${loser.username}`);
+                interaction.editReply({ embeds: [confirmedEmbed], components: [] });
+              });
+            });
+          });
+        });
+      });
     });
   });
 }
@@ -225,51 +279,57 @@ client.on('interactionCreate', async interaction => {
       return interaction.editReply('You are not authorized to report this match. Only admins or the players involved can report match results.');
     }
 
-    ensurePlayerForMonth(winner.id, winner.username, month, (err) => {
-      if (err) {
-        console.error('Winner ensure error:', err);
-        return interaction.editReply('Error preparing winner registration.');
-      }
+    // If an admin reports it, skip confirmation and record immediately
+    if (isAdmin && !isInvolved) {
+      return recordMatch(winner, loser, reporter, month, interaction);
+    }
 
-      ensurePlayerForMonth(loser.id, loser.username, month, (err2) => {
-        if (err2) {
-          console.error('Loser ensure error:', err2);
-          return interaction.editReply('Error preparing loser registration.');
-        }
+    // The other player must confirm — figure out who that is
+    const confirmerId = reporter === winner.id ? loser.id : winner.id;
+    const confirmerMention = `<@${confirmerId}>`;
+    const matchId = `match_${winner.id}_${loser.id}_${Date.now()}`;
 
-        db.serialize(() => {
-          db.run('BEGIN TRANSACTION');
-          db.run(`INSERT INTO matches (winner_id, loser_id, reported_by, month) VALUES (?, ?, ?, ?)`, [winner.id, loser.id, reporter, month], function(err3) {
-            if (err3) {
-              db.run('ROLLBACK');
-              console.error('Match insert error:', err3);
-              return interaction.editReply('Error reporting match. Please try again.');
-            }
-            db.run(`UPDATE players SET points = points + 1 WHERE id = ? AND month = ?`, [winner.id, month], function(err4) {
-              if (err4) {
-                db.run('ROLLBACK');
-                console.error('Winner points update error:', err4);
-                return interaction.editReply('Error updating winner points. Match was not recorded.');
-              }
-              db.run(`UPDATE players SET points = points - 1 WHERE id = ? AND month = ?`, [loser.id, month], function(err5) {
-                if (err5) {
-                  db.run('ROLLBACK');
-                  console.error('Loser points update error:', err5);
-                  return interaction.editReply('Error updating loser points. Match was not recorded.');
-                }
-                db.run('COMMIT', function(err6) {
-                  if (err6) {
-                    console.error('Commit error:', err6);
-                    return interaction.editReply('Error saving match. Please try again.');
-                  }
-                  interaction.editReply(`Match reported! ${winner.username} defeated ${loser.username}.`);
-                });
-              });
-            });
-          });
-        });
-      });
+    const row = new ActionRowBuilder().addComponents(
+      new ButtonBuilder()
+        .setCustomId(`confirm_${matchId}`)
+        .setLabel('Confirm')
+        .setStyle(ButtonStyle.Success),
+      new ButtonBuilder()
+        .setCustomId(`deny_${matchId}`)
+        .setLabel('Deny')
+        .setStyle(ButtonStyle.Danger)
+    );
+
+    const embed = new EmbedBuilder()
+      .setTitle('Match Result Pending Confirmation')
+      .setColor(0xFFA500)
+      .setDescription(`**${winner.username}** defeated **${loser.username}**\n\n${confirmerMention}, please confirm or deny this result.\n\n*This request expires in 5 minutes.*`);
+
+    const reply = await interaction.editReply({ embeds: [embed], components: [row] });
+
+    // Store pending match data
+    pendingMatches.set(matchId, {
+      winner,
+      loser,
+      reporter,
+      month,
+      confirmerId,
+      messageId: reply.id,
+      interaction
     });
+
+    // Auto-expire after 5 minutes
+    setTimeout(() => {
+      if (pendingMatches.has(matchId)) {
+        pendingMatches.delete(matchId);
+        const expiredEmbed = new EmbedBuilder()
+          .setTitle('Match Result Expired')
+          .setColor(0x808080)
+          .setDescription(`Match between **${winner.username}** and **${loser.username}** was not confirmed in time and has been cancelled.`);
+        interaction.editReply({ embeds: [expiredEmbed], components: [] }).catch(() => {});
+      }
+    }, 5 * 60 * 1000);
+
   } else if (commandName === 'leaderboard') {
     await interaction.deferReply();
     const month = getCurrentMonth();
@@ -541,6 +601,41 @@ client.on('interactionCreate', async interaction => {
       }
       interaction.editReply(`${player.username}'s score has been set to ${points} points.`);
     });
+  }
+});
+
+// Handle button interactions (match confirmations)
+client.on('interactionCreate', async interaction => {
+  if (!interaction.isButton()) return;
+
+  const { customId } = interaction;
+  if (!customId.startsWith('confirm_') && !customId.startsWith('deny_')) return;
+
+  const matchId = customId.replace('confirm_', '').replace('deny_', '');
+  const pending = pendingMatches.get(matchId);
+
+  if (!pending) {
+    return interaction.reply({ content: 'This match request has already been handled or has expired.', ephemeral: true });
+  }
+
+  const { winner, loser, reporter, month, confirmerId, interaction: originalInteraction } = pending;
+
+  // Only the designated confirmer (the other player) can respond
+  if (interaction.user.id !== confirmerId) {
+    return interaction.reply({ content: 'Only the other player involved in this match can confirm or deny it.', ephemeral: true });
+  }
+
+  pendingMatches.delete(matchId);
+  await interaction.deferUpdate();
+
+  if (customId.startsWith('confirm_')) {
+    recordMatch(winner, loser, reporter, month, originalInteraction);
+  } else {
+    const deniedEmbed = new EmbedBuilder()
+      .setTitle('Match Denied')
+      .setColor(0xFF4444)
+      .setDescription(`**${interaction.user.username}** denied the match result.\n**${winner.username}** vs **${loser.username}** — no points recorded.`);
+    originalInteraction.editReply({ embeds: [deniedEmbed], components: [] });
   }
 });
 
