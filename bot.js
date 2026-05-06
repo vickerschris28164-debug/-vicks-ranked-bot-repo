@@ -15,8 +15,6 @@ if (!fs.existsSync(dbDir)) {
 const client = new Client({
   intents: [
     GatewayIntentBits.Guilds,
-    GatewayIntentBits.GuildMessages,
-    GatewayIntentBits.MessageContent,
   ],
 });
 
@@ -185,6 +183,11 @@ client.once('ready', async () => {
 client.on('interactionCreate', async interaction => {
   if (!interaction.isChatInputCommand()) return;
 
+  // Slash commands require a guild context — block DM usage to prevent crashes
+  if (!interaction.guild || !interaction.member) {
+    return interaction.reply({ content: 'This bot can only be used inside a server.', ephemeral: true });
+  }
+
   const { commandName } = interaction;
 
   if (commandName === 'register') {
@@ -234,20 +237,36 @@ client.on('interactionCreate', async interaction => {
           return interaction.editReply('Error preparing loser registration.');
         }
 
-        db.run(`INSERT INTO matches (winner_id, loser_id, reported_by, month) VALUES (?, ?, ?, ?)`, [winner.id, loser.id, reporter, month], function(err3) {
-          if (err3) {
-            console.error('Match insert error:', err3);
-            return interaction.editReply('Error reporting match. Please try again.');
-          }
-
-          db.run(`UPDATE players SET points = points + 1 WHERE id = ? AND month = ?`, [winner.id, month], function(err4) {
-            if (err4) console.error('Winner points update error:', err4);
+        db.serialize(() => {
+          db.run('BEGIN TRANSACTION');
+          db.run(`INSERT INTO matches (winner_id, loser_id, reported_by, month) VALUES (?, ?, ?, ?)`, [winner.id, loser.id, reporter, month], function(err3) {
+            if (err3) {
+              db.run('ROLLBACK');
+              console.error('Match insert error:', err3);
+              return interaction.editReply('Error reporting match. Please try again.');
+            }
+            db.run(`UPDATE players SET points = points + 1 WHERE id = ? AND month = ?`, [winner.id, month], function(err4) {
+              if (err4) {
+                db.run('ROLLBACK');
+                console.error('Winner points update error:', err4);
+                return interaction.editReply('Error updating winner points. Match was not recorded.');
+              }
+              db.run(`UPDATE players SET points = points - 1 WHERE id = ? AND month = ?`, [loser.id, month], function(err5) {
+                if (err5) {
+                  db.run('ROLLBACK');
+                  console.error('Loser points update error:', err5);
+                  return interaction.editReply('Error updating loser points. Match was not recorded.');
+                }
+                db.run('COMMIT', function(err6) {
+                  if (err6) {
+                    console.error('Commit error:', err6);
+                    return interaction.editReply('Error saving match. Please try again.');
+                  }
+                  interaction.editReply(`Match reported! ${winner.username} defeated ${loser.username}.`);
+                });
+              });
+            });
           });
-          db.run(`UPDATE players SET points = points - 1 WHERE id = ? AND month = ?`, [loser.id, month], function(err5) {
-            if (err5) console.error('Loser points update error:', err5);
-          });
-
-          interaction.editReply(`Match reported! ${winner.username} defeated ${loser.username}.`);
         });
       });
     });
@@ -470,18 +489,39 @@ client.on('interactionCreate', async interaction => {
         return interaction.editReply('No recent match found for this player.');
       }
 
-      if (row.winner_id === player.id) {
-        db.run(`UPDATE players SET points = points - 1 WHERE id = ? AND month = ?`, [player.id, month]);
-      } else {
-        db.run(`UPDATE players SET points = points + 1 WHERE id = ? AND month = ?`, [player.id, month]);
-      }
+      const pointsWinner = row.winner_id;
+      const pointsLoser = row.loser_id;
 
-      db.run(`DELETE FROM matches WHERE id = ?`, [row.id], function(err2) {
-        if (err2) {
-          console.error(err2);
-          return interaction.editReply('Error undoing match.');
-        }
-        interaction.editReply(`Last match for ${player.username} has been undone.`);
+      db.serialize(() => {
+        db.run('BEGIN TRANSACTION');
+        db.run(`UPDATE players SET points = points - 1 WHERE id = ? AND month = ?`, [pointsWinner, month], function(err2) {
+          if (err2) {
+            db.run('ROLLBACK');
+            console.error('Undo winner points error:', err2);
+            return interaction.editReply('Error undoing match points.');
+          }
+          db.run(`UPDATE players SET points = points + 1 WHERE id = ? AND month = ?`, [pointsLoser, month], function(err3) {
+            if (err3) {
+              db.run('ROLLBACK');
+              console.error('Undo loser points error:', err3);
+              return interaction.editReply('Error undoing match points.');
+            }
+            db.run(`DELETE FROM matches WHERE id = ?`, [row.id], function(err4) {
+              if (err4) {
+                db.run('ROLLBACK');
+                console.error('Undo match delete error:', err4);
+                return interaction.editReply('Error deleting match record.');
+              }
+              db.run('COMMIT', function(err5) {
+                if (err5) {
+                  console.error('Undo commit error:', err5);
+                  return interaction.editReply('Error saving undo. Please try again.');
+                }
+                interaction.editReply(`Last match for ${player.username} has been undone.`);
+              });
+            });
+          });
+        });
       });
     });
   } else if (commandName === 'set_score') {
