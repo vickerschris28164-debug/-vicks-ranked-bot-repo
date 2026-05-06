@@ -151,8 +151,15 @@ function recordMatch(winner, loser, reporter, month, interaction) {
   });
 }
 
+// Helper: convert a raw month key into a readable label
+function formatMonthLabel(key) {
+  const resetMatch = key.match(/^(\d{4}-\d{2})-reset-(\d+)$/);
+  if (resetMatch) return `${resetMatch[1]} — Reset #${resetMatch[2]}`;
+  return key;
+}
+
 // Register slash commands
-client.once('ready', async () => {
+client.once('clientReady', async () => {
   console.log(`Logged in as ${client.user.tag}!`);
   
   // Set bot username
@@ -451,13 +458,6 @@ client.on('interactionCreate', async interaction => {
     const monthInput = interaction.options.getString('month');
     const player = interaction.options.getUser('player');
 
-    // Helper: convert a raw month key into a readable label
-    function formatMonthLabel(key) {
-      const resetMatch = key.match(/^(\d{4}-\d{2})-reset-(\d+)$/);
-      if (resetMatch) return `${resetMatch[1]} — Reset #${resetMatch[2]}`;
-      return key;
-    }
-
     if (!monthInput) {
       db.all(`SELECT DISTINCT month FROM players ORDER BY month DESC`, [], (err, rows) => {
         if (err) {
@@ -552,12 +552,6 @@ client.on('interactionCreate', async interaction => {
     const monthRegex = /^\d{4}-\d{2}(-reset-\d+)?$/;
     if (monthInput && !monthRegex.test(monthInput)) {
       return interaction.editReply('Invalid format. Use `YYYY-MM` for a regular month or copy the key shown in `/history`.');
-    }
-
-    function formatMonthLabel(key) {
-      const resetMatch = key.match(/^(\d{4}-\d{2})-reset-(\d+)$/);
-      if (resetMatch) return `${resetMatch[1]} — Reset #${resetMatch[2]}`;
-      return key;
     }
 
     db.all(
@@ -672,8 +666,12 @@ client.on('interactionCreate', async interaction => {
     const month = getCurrentMonth();
 
     db.get(`SELECT id, winner_id, loser_id FROM matches WHERE (winner_id = ? OR loser_id = ?) AND month = ? ORDER BY id DESC LIMIT 1`, [player.id, player.id, month], (err, row) => {
-      if (err || !row) {
-        return interaction.editReply('No recent match found for this player.');
+      if (err) {
+        console.error('Undo match lookup error:', err);
+        return interaction.editReply('Error looking up match. Please try again.');
+      }
+      if (!row) {
+        return interaction.editReply('No recent match found for this player this month.');
       }
 
       const pointsWinner = row.winner_id;
