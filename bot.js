@@ -539,27 +539,29 @@ client.on('interactionCreate', async interaction => {
       return interaction.editReply('You do not have permission to reset the leaderboard.');
     }
 
-    const newMonth = getCurrentMonth();
+    const currentMonth = getCurrentMonth();
+    const archiveKey = `${currentMonth}-reset-${Date.now()}`;
+
     db.serialize(() => {
       db.run('BEGIN TRANSACTION');
-      db.run(`UPDATE players SET points = 0 WHERE month = ?`, [newMonth], function(err) {
+      db.run(`UPDATE players SET month = ? WHERE month = ?`, [archiveKey, currentMonth], function(err) {
         if (err) {
           db.run('ROLLBACK');
-          console.error('Reset points error:', err);
-          return interaction.editReply('Error resetting leaderboard.');
+          console.error('Reset archive players error:', err);
+          return interaction.editReply('Error archiving leaderboard data.');
         }
-        db.run(`DELETE FROM matches WHERE month = ?`, [newMonth], function(err2) {
+        db.run(`UPDATE matches SET month = ? WHERE month = ?`, [archiveKey, currentMonth], function(err2) {
           if (err2) {
             db.run('ROLLBACK');
-            console.error('Reset matches error:', err2);
-            return interaction.editReply('Error resetting match history.');
+            console.error('Reset archive matches error:', err2);
+            return interaction.editReply('Error archiving match history.');
           }
           db.run('COMMIT', function(err3) {
             if (err3) {
               console.error('Reset commit error:', err3);
               return interaction.editReply('Error saving reset. Please try again.');
             }
-            interaction.editReply(`Monthly leaderboard for **${newMonth}** has been fully reset. All points and match history cleared.`);
+            interaction.editReply(`Monthly leaderboard for **${currentMonth}** has been reset. All data archived — use \`/history\` to view it. Points start fresh from 0.`);
           });
         });
       });
