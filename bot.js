@@ -201,6 +201,17 @@ client.once('ready', async () => {
           .setDescription('Player to view stats for (leave blank for leaderboard)')
           .setRequired(false)),
     new SlashCommandBuilder()
+      .setName('match_history')
+      .setDescription('View recent match results for yourself or another player')
+      .addUserOption(option =>
+        option.setName('player')
+          .setDescription('Player to view (leave blank for yourself)')
+          .setRequired(false))
+      .addStringOption(option =>
+        option.setName('month')
+          .setDescription('Month to view (e.g. 2025-04). Leave blank for current month.')
+          .setRequired(false)),
+    new SlashCommandBuilder()
       .setName('help')
       .setDescription('Show bot commands and usage'),
     new SlashCommandBuilder()
@@ -532,6 +543,63 @@ client.on('interactionCreate', async interaction => {
         interaction.editReply({ embeds: [embed] });
       });
     }
+  } else if (commandName === 'match_history') {
+    await interaction.deferReply();
+    const player = interaction.options.getUser('player') || interaction.user;
+    const monthInput = interaction.options.getString('month');
+    const month = monthInput || getCurrentMonth();
+
+    const monthRegex = /^\d{4}-\d{2}(-reset-\d+)?$/;
+    if (monthInput && !monthRegex.test(monthInput)) {
+      return interaction.editReply('Invalid format. Use `YYYY-MM` for a regular month or copy the key shown in `/history`.');
+    }
+
+    function formatMonthLabel(key) {
+      const resetMatch = key.match(/^(\d{4}-\d{2})-reset-(\d+)$/);
+      if (resetMatch) return `${resetMatch[1]} — Reset #${resetMatch[2]}`;
+      return key;
+    }
+
+    db.all(
+      `SELECT m.id, m.winner_id, m.loser_id, m.timestamp,
+              pw.name AS winner_name, pl.name AS loser_name
+       FROM matches m
+       LEFT JOIN players pw ON pw.id = m.winner_id AND pw.month = m.month
+       LEFT JOIN players pl ON pl.id = m.loser_id AND pl.month = m.month
+       WHERE (m.winner_id = ? OR m.loser_id = ?) AND m.month = ?
+       ORDER BY m.id DESC LIMIT 10`,
+      [player.id, player.id, month],
+      (err, rows) => {
+        if (err) {
+          console.error('Match history query error:', err);
+          return interaction.editReply('Error fetching match history.');
+        }
+
+        const displayLabel = formatMonthLabel(month);
+
+        if (rows.length === 0) {
+          return interaction.editReply(`No matches found for **${player.username}** in **${displayLabel}**.`);
+        }
+
+        const lines = rows.map((row, i) => {
+          const won = row.winner_id === player.id;
+          const opponentName = won ? (row.loser_name || 'Unknown') : (row.winner_name || 'Unknown');
+          const result = won ? '✅ Win ' : '❌ Loss';
+          const date = row.timestamp
+            ? new Date(row.timestamp).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })
+            : '—';
+          return `\`#${rows.length - i}\` ${result}  vs  **${opponentName}**  —  ${date}`;
+        }).reverse();
+
+        const embed = new EmbedBuilder()
+          .setTitle(`Match History — ${player.username}  |  ${displayLabel}`)
+          .setColor(0x0099FF)
+          .setDescription(lines.join('\n'))
+          .setFooter({ text: `Showing last ${rows.length} match${rows.length === 1 ? '' : 'es'}` });
+
+        interaction.editReply({ embeds: [embed] });
+      }
+    );
   } else if (commandName === 'help') {
     await interaction.deferReply({ ephemeral: true });
     const embed = new EmbedBuilder()
@@ -543,6 +611,7 @@ client.on('interactionCreate', async interaction => {
         { name: '/report_match', value: 'Report a match result with winner and loser.', inline: false },
         { name: '/leaderboard', value: 'View the current monthly leaderboard.', inline: false },
         { name: '/stats', value: 'Show monthly stats for yourself or another player.', inline: false },
+        { name: '/match_history', value: 'View your last 10 match results. Optionally tag another player or specify a month.', inline: false },
         { name: '/history', value: 'View leaderboard or player stats for a past month. Leave month blank to list all available months.', inline: false },
         { name: '/reset_monthly', value: 'Reset the monthly leaderboard (Admin only).', inline: false },
         { name: '/undo_match', value: 'Undo the last match for a player (Admin only).', inline: false },
