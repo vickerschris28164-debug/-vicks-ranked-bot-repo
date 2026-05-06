@@ -440,6 +440,13 @@ client.on('interactionCreate', async interaction => {
     const monthInput = interaction.options.getString('month');
     const player = interaction.options.getUser('player');
 
+    // Helper: convert a raw month key into a readable label
+    function formatMonthLabel(key) {
+      const resetMatch = key.match(/^(\d{4}-\d{2})-reset-(\d+)$/);
+      if (resetMatch) return `${resetMatch[1]} — Reset #${resetMatch[2]}`;
+      return key;
+    }
+
     if (!monthInput) {
       db.all(`SELECT DISTINCT month FROM players ORDER BY month DESC`, [], (err, rows) => {
         if (err) {
@@ -449,19 +456,29 @@ client.on('interactionCreate', async interaction => {
         if (rows.length === 0) {
           return interaction.editReply('No historical data found yet.');
         }
+
+        const currentMonth = getCurrentMonth();
+        const lines = rows.map(r => {
+          const label = formatMonthLabel(r.month);
+          const isCurrent = r.month === currentMonth;
+          return `• **${label}**${isCurrent ? ' *(current)*' : ''} — \`/history month:${r.month}\``;
+        });
+
         const embed = new EmbedBuilder()
           .setTitle('Available Monthly Records')
           .setColor(0x9B59B6)
-          .setDescription(rows.map(r => `• ${r.month}`).join('\n') + '\n\nUse `/history month:YYYY-MM` to view a specific month.');
+          .setDescription(lines.join('\n'));
         interaction.editReply({ embeds: [embed] });
       });
       return;
     }
 
-    const monthRegex = /^\d{4}-\d{2}$/;
+    const monthRegex = /^\d{4}-\d{2}(-reset-\d+)?$/;
     if (!monthRegex.test(monthInput)) {
-      return interaction.editReply('Invalid month format. Please use `YYYY-MM` (e.g. `2025-04`).');
+      return interaction.editReply('Invalid format. Use `YYYY-MM` for a regular month or copy the key shown in `/history`.');
     }
+
+    const displayLabel = formatMonthLabel(monthInput);
 
     if (player) {
       db.get(`SELECT points FROM players WHERE id = ? AND month = ?`, [player.id, monthInput], (err, playerRow) => {
@@ -470,7 +487,7 @@ client.on('interactionCreate', async interaction => {
           return interaction.editReply('Error fetching history.');
         }
         if (!playerRow) {
-          return interaction.editReply(`${player.username} has no data for **${monthInput}**.`);
+          return interaction.editReply(`${player.username} has no data for **${displayLabel}**.`);
         }
 
         db.get(`SELECT COUNT(*) AS wins FROM matches WHERE winner_id = ? AND month = ?`, [player.id, monthInput], (err2, winsRow) => {
@@ -484,7 +501,7 @@ client.on('interactionCreate', async interaction => {
             const winRate = totalMatches === 0 ? '0%' : `${Math.round((wins / totalMatches) * 100)}%`;
 
             const embed = new EmbedBuilder()
-              .setTitle(`${player.username}'s Stats — ${monthInput}`)
+              .setTitle(`${player.username}'s Stats — ${displayLabel}`)
               .setColor(0x9B59B6)
               .addFields(
                 { name: 'Points', value: `${playerRow.points}`, inline: true },
@@ -504,11 +521,11 @@ client.on('interactionCreate', async interaction => {
         }
 
         const embed = new EmbedBuilder()
-          .setTitle(`Leaderboard — ${monthInput}`)
+          .setTitle(`Leaderboard — ${displayLabel}`)
           .setColor(0x9B59B6);
 
         if (rows.length === 0) {
-          embed.setDescription(`No data found for **${monthInput}**.`);
+          embed.setDescription(`No data found for **${displayLabel}**.`);
         } else {
           embed.setDescription(rows.map((row, i) => `${i + 1}. ${row.name}: ${row.points} points`).join('\n'));
         }
@@ -540,28 +557,38 @@ client.on('interactionCreate', async interaction => {
     }
 
     const currentMonth = getCurrentMonth();
-    const archiveKey = `${currentMonth}-reset-${Date.now()}`;
 
-    db.serialize(() => {
-      db.run('BEGIN TRANSACTION');
-      db.run(`UPDATE players SET month = ? WHERE month = ?`, [archiveKey, currentMonth], function(err) {
-        if (err) {
-          db.run('ROLLBACK');
-          console.error('Reset archive players error:', err);
-          return interaction.editReply('Error archiving leaderboard data.');
-        }
-        db.run(`UPDATE matches SET month = ? WHERE month = ?`, [archiveKey, currentMonth], function(err2) {
-          if (err2) {
+    // Count how many resets already exist for this month to get the next number
+    db.all(`SELECT month FROM players WHERE month LIKE ? ORDER BY month ASC`, [`${currentMonth}-reset-%`], (countErr, existingResets) => {
+      if (countErr) {
+        console.error('Reset count error:', countErr);
+        return interaction.editReply('Error preparing reset.');
+      }
+
+      const resetNumber = existingResets.length + 1;
+      const archiveKey = `${currentMonth}-reset-${resetNumber}`;
+
+      db.serialize(() => {
+        db.run('BEGIN TRANSACTION');
+        db.run(`UPDATE players SET month = ? WHERE month = ?`, [archiveKey, currentMonth], function(err) {
+          if (err) {
             db.run('ROLLBACK');
-            console.error('Reset archive matches error:', err2);
-            return interaction.editReply('Error archiving match history.');
+            console.error('Reset archive players error:', err);
+            return interaction.editReply('Error archiving leaderboard data.');
           }
-          db.run('COMMIT', function(err3) {
-            if (err3) {
-              console.error('Reset commit error:', err3);
-              return interaction.editReply('Error saving reset. Please try again.');
+          db.run(`UPDATE matches SET month = ? WHERE month = ?`, [archiveKey, currentMonth], function(err2) {
+            if (err2) {
+              db.run('ROLLBACK');
+              console.error('Reset archive matches error:', err2);
+              return interaction.editReply('Error archiving match history.');
             }
-            interaction.editReply(`Monthly leaderboard for **${currentMonth}** has been reset. All data archived — use \`/history\` to view it. Points start fresh from 0.`);
+            db.run('COMMIT', function(err3) {
+              if (err3) {
+                console.error('Reset commit error:', err3);
+                return interaction.editReply('Error saving reset. Please try again.');
+              }
+              interaction.editReply(`Monthly leaderboard for **${currentMonth}** has been reset (archive: Reset #${resetNumber}). Use \`/history\` to view past data. Points start fresh from 0.`);
+            });
           });
         });
       });
