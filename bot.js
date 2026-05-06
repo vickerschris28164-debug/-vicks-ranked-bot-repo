@@ -500,6 +500,34 @@ cron.schedule('0 0 1 * *', () => {
   console.log('New monthly leaderboard cycle started:', getCurrentMonth());
 });
 
+// Discord client error handling — prevents crashes from connection issues
+client.on('error', (error) => {
+  console.error('Discord client error:', error.message);
+});
+
+client.on('warn', (info) => {
+  console.warn('Discord warning:', info);
+});
+
+client.on('disconnect', () => {
+  console.warn('Bot disconnected from Discord. Attempting to reconnect...');
+});
+
+client.on('reconnecting', () => {
+  console.log('Bot reconnecting to Discord...');
+});
+
+// Catch unhandled promise rejections — prevents the process from crashing
+process.on('unhandledRejection', (reason, promise) => {
+  console.error('Unhandled promise rejection:', reason);
+});
+
+// Catch uncaught exceptions — log and keep running instead of crashing
+process.on('uncaughtException', (error) => {
+  console.error('Uncaught exception:', error.message);
+  console.error(error.stack);
+});
+
 // Ensure token exists
 if (!process.env.DISCORD_TOKEN) {
   console.error('DISCORD_TOKEN not found in .env file!');
