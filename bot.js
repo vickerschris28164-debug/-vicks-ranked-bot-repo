@@ -188,6 +188,7 @@ client.on('interactionCreate', async interaction => {
   const { commandName } = interaction;
 
   if (commandName === 'register') {
+    await interaction.deferReply();
     const userId = interaction.user.id;
     const userName = interaction.user.username;
     const month = getCurrentMonth();
@@ -195,12 +196,12 @@ client.on('interactionCreate', async interaction => {
     ensurePlayerForMonth(userId, userName, month, (err, inserted) => {
       if (err) {
         console.error('Register error:', err);
-        return interaction.reply('Error registering. Please try again.');
+        return interaction.editReply('Error registering. Please try again.');
       }
       if (inserted) {
-        interaction.reply('You have been registered for the leaderboard!');
+        interaction.editReply('You have been registered for the leaderboard!');
       } else {
-        interaction.reply('You are already registered for this month.');
+        interaction.editReply('You are already registered for this month.');
       }
     });
   } else if (commandName === 'report_match') {
@@ -251,11 +252,12 @@ client.on('interactionCreate', async interaction => {
       });
     });
   } else if (commandName === 'leaderboard') {
+    await interaction.deferReply();
     const month = getCurrentMonth();
     db.all(`SELECT name, points FROM players WHERE month = ? ORDER BY points DESC LIMIT 10`, [month], (err, rows) => {
       if (err) {
         console.error(err);
-        return interaction.reply('Error fetching leaderboard.');
+        return interaction.editReply('Error fetching leaderboard.');
       }
 
       const embed = new EmbedBuilder()
@@ -272,37 +274,38 @@ client.on('interactionCreate', async interaction => {
         embed.setDescription(description);
       }
 
-      interaction.reply({ embeds: [embed] });
+      interaction.editReply({ embeds: [embed] });
     });
   } else if (commandName === 'stats') {
+    await interaction.deferReply();
     const player = interaction.options.getUser('player') || interaction.user;
     const month = getCurrentMonth();
 
     db.get(`SELECT points FROM players WHERE id = ? AND month = ?`, [player.id, month], (err, playerRow) => {
       if (err) {
         console.error('Stats player lookup error:', err);
-        return interaction.reply('Error fetching stats.');
+        return interaction.editReply('Error fetching stats.');
       }
       if (!playerRow) {
-        return interaction.reply(`${player.username} is not registered for this month.`);
+        return interaction.editReply(`${player.username} is not registered for this month.`);
       }
 
       db.get(`SELECT COUNT(*) AS wins FROM matches WHERE winner_id = ? AND month = ?`, [player.id, month], (err2, winsRow) => {
         if (err2) {
           console.error('Stats wins query error:', err2);
-          return interaction.reply('Error fetching stats.');
+          return interaction.editReply('Error fetching stats.');
         }
 
         db.get(`SELECT COUNT(*) AS losses FROM matches WHERE loser_id = ? AND month = ?`, [player.id, month], (err3, lossesRow) => {
           if (err3) {
             console.error('Stats losses query error:', err3);
-            return interaction.reply('Error fetching stats.');
+            return interaction.editReply('Error fetching stats.');
           }
 
           db.all(`SELECT winner_id, loser_id FROM matches WHERE (winner_id = ? OR loser_id = ?) AND month = ? ORDER BY id DESC`, [player.id, player.id, month], (err4, matchRows) => {
             if (err4) {
               console.error('Stats streak query error:', err4);
-              return interaction.reply('Error fetching stats.');
+              return interaction.editReply('Error fetching stats.');
             }
 
             let streak = 0;
@@ -336,12 +339,13 @@ client.on('interactionCreate', async interaction => {
                 { name: 'Current Streak', value: streakText, inline: true }
               );
 
-            interaction.reply({ embeds: [embed] });
+            interaction.editReply({ embeds: [embed] });
           });
         });
       });
     });
   } else if (commandName === 'history') {
+    await interaction.deferReply();
     const monthInput = interaction.options.getString('month');
     const player = interaction.options.getUser('player');
 
@@ -349,39 +353,39 @@ client.on('interactionCreate', async interaction => {
       db.all(`SELECT DISTINCT month FROM players ORDER BY month DESC`, [], (err, rows) => {
         if (err) {
           console.error('History months query error:', err);
-          return interaction.reply('Error fetching history.');
+          return interaction.editReply('Error fetching history.');
         }
         if (rows.length === 0) {
-          return interaction.reply('No historical data found yet.');
+          return interaction.editReply('No historical data found yet.');
         }
         const embed = new EmbedBuilder()
           .setTitle('Available Monthly Records')
           .setColor(0x9B59B6)
           .setDescription(rows.map(r => `• ${r.month}`).join('\n') + '\n\nUse `/history month:YYYY-MM` to view a specific month.');
-        interaction.reply({ embeds: [embed] });
+        interaction.editReply({ embeds: [embed] });
       });
       return;
     }
 
     const monthRegex = /^\d{4}-\d{2}$/;
     if (!monthRegex.test(monthInput)) {
-      return interaction.reply('Invalid month format. Please use `YYYY-MM` (e.g. `2025-04`).');
+      return interaction.editReply('Invalid month format. Please use `YYYY-MM` (e.g. `2025-04`).');
     }
 
     if (player) {
       db.get(`SELECT points FROM players WHERE id = ? AND month = ?`, [player.id, monthInput], (err, playerRow) => {
         if (err) {
           console.error('History stats lookup error:', err);
-          return interaction.reply('Error fetching history.');
+          return interaction.editReply('Error fetching history.');
         }
         if (!playerRow) {
-          return interaction.reply(`${player.username} has no data for **${monthInput}**.`);
+          return interaction.editReply(`${player.username} has no data for **${monthInput}**.`);
         }
 
         db.get(`SELECT COUNT(*) AS wins FROM matches WHERE winner_id = ? AND month = ?`, [player.id, monthInput], (err2, winsRow) => {
-          if (err2) return interaction.reply('Error fetching history.');
+          if (err2) return interaction.editReply('Error fetching history.');
           db.get(`SELECT COUNT(*) AS losses FROM matches WHERE loser_id = ? AND month = ?`, [player.id, monthInput], (err3, lossesRow) => {
-            if (err3) return interaction.reply('Error fetching history.');
+            if (err3) return interaction.editReply('Error fetching history.');
 
             const wins = winsRow.wins || 0;
             const losses = lossesRow.losses || 0;
@@ -397,7 +401,7 @@ client.on('interactionCreate', async interaction => {
                 { name: 'Losses', value: `${losses}`, inline: true },
                 { name: 'Win Rate', value: `${winRate}`, inline: true }
               );
-            interaction.reply({ embeds: [embed] });
+            interaction.editReply({ embeds: [embed] });
           });
         });
       });
@@ -405,7 +409,7 @@ client.on('interactionCreate', async interaction => {
       db.all(`SELECT name, points FROM players WHERE month = ? ORDER BY points DESC LIMIT 10`, [monthInput], (err, rows) => {
         if (err) {
           console.error('History leaderboard query error:', err);
-          return interaction.reply('Error fetching history.');
+          return interaction.editReply('Error fetching history.');
         }
 
         const embed = new EmbedBuilder()
@@ -417,10 +421,11 @@ client.on('interactionCreate', async interaction => {
         } else {
           embed.setDescription(rows.map((row, i) => `${i + 1}. ${row.name}: ${row.points} points`).join('\n'));
         }
-        interaction.reply({ embeds: [embed] });
+        interaction.editReply({ embeds: [embed] });
       });
     }
   } else if (commandName === 'help') {
+    await interaction.deferReply({ ephemeral: true });
     const embed = new EmbedBuilder()
       .setTitle('Hideout TCG Ranked Bot Help')
       .setColor(0xFFD700)
@@ -436,55 +441,53 @@ client.on('interactionCreate', async interaction => {
         { name: '/set_score', value: 'Set a player score manually (Admin only).', inline: false }
       );
 
-    interaction.reply({ embeds: [embed], ephemeral: true });
+    interaction.editReply({ embeds: [embed] });
   } else if (commandName === 'reset_monthly') {
+    await interaction.deferReply();
     if (!interaction.member.permissions.has('Administrator')) {
-      return interaction.reply('You do not have permission to reset the leaderboard.');
+      return interaction.editReply('You do not have permission to reset the leaderboard.');
     }
 
     const newMonth = getCurrentMonth();
-    // Reset points to 0 for current month? Or archive?
-    // For simplicity, just reset points
     db.run(`UPDATE players SET points = 0 WHERE month = ?`, [newMonth], function(err) {
       if (err) {
         console.error(err);
-        return interaction.reply('Error resetting leaderboard.');
+        return interaction.editReply('Error resetting leaderboard.');
       }
-      interaction.reply('Monthly leaderboard has been reset.');
+      interaction.editReply('Monthly leaderboard has been reset.');
     });
   } else if (commandName === 'undo_match') {
+    await interaction.deferReply();
     if (!interaction.member.permissions.has('Administrator')) {
-      return interaction.reply('You do not have permission to undo matches.');
+      return interaction.editReply('You do not have permission to undo matches.');
     }
 
     const player = interaction.options.getUser('player');
     const month = getCurrentMonth();
 
-    // Find the most recent match for this player
     db.get(`SELECT id, winner_id, loser_id FROM matches WHERE (winner_id = ? OR loser_id = ?) AND month = ? ORDER BY id DESC LIMIT 1`, [player.id, player.id, month], (err, row) => {
       if (err || !row) {
-        return interaction.reply('No recent match found for this player.');
+        return interaction.editReply('No recent match found for this player.');
       }
 
-      // Reverse the points
       if (row.winner_id === player.id) {
         db.run(`UPDATE players SET points = points - 1 WHERE id = ? AND month = ?`, [player.id, month]);
       } else {
         db.run(`UPDATE players SET points = points + 1 WHERE id = ? AND month = ?`, [player.id, month]);
       }
 
-      // Delete the match
       db.run(`DELETE FROM matches WHERE id = ?`, [row.id], function(err2) {
         if (err2) {
           console.error(err2);
-          return interaction.reply('Error undoing match.');
+          return interaction.editReply('Error undoing match.');
         }
-        interaction.reply(`Last match for ${player.username} has been undone.`);
+        interaction.editReply(`Last match for ${player.username} has been undone.`);
       });
     });
   } else if (commandName === 'set_score') {
+    await interaction.deferReply();
     if (!interaction.member.permissions.has('Administrator')) {
-      return interaction.reply('You do not have permission to set scores.');
+      return interaction.editReply('You do not have permission to set scores.');
     }
 
     const player = interaction.options.getUser('player');
@@ -494,9 +497,9 @@ client.on('interactionCreate', async interaction => {
     db.run(`UPDATE players SET points = ? WHERE id = ? AND month = ?`, [points, player.id, month], function(err) {
       if (err) {
         console.error(err);
-        return interaction.reply('Error setting score.');
+        return interaction.editReply('Error setting score.');
       }
-      interaction.reply(`${player.username}'s score has been set to ${points} points.`);
+      interaction.editReply(`${player.username}'s score has been set to ${points} points.`);
     });
   }
 });
