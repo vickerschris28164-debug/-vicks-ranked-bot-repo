@@ -204,6 +204,12 @@ client.on('interactionCreate', async interaction => {
       return interaction.editReply('Winner and loser cannot be the same person!');
     }
 
+    const isAdmin = interaction.member.permissions.has('Administrator');
+    const isInvolved = reporter === winner.id || reporter === loser.id;
+    if (!isAdmin && !isInvolved) {
+      return interaction.editReply('You are not authorized to report this match. Only admins or the players involved can report match results.');
+    }
+
     ensurePlayerForMonth(winner.id, winner.username, month, (err) => {
       if (err) {
         console.error('Winner ensure error:', err);
