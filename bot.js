@@ -352,15 +352,11 @@ client.on('interactionCreate', async interaction => {
     }
 
     const newMonth = getCurrentMonth();
-    // Reset points to 0 for current month? Or archive?
-    // For simplicity, just reset points
-    db.run(`UPDATE players SET points = 0 WHERE month = ?`, [newMonth], function(err) {
-      if (err) {
-        console.error(err);
-        return interaction.reply('Error resetting leaderboard.');
-      }
-      interaction.reply('Monthly leaderboard has been reset.');
-    });
+    // Historical months are preserved as-is. Fresh entries for the new month
+    // are created automatically by ensurePlayerForMonth when players register
+    // or report matches — no data needs to be modified here.
+    console.log(`[reset_monthly] Admin acknowledged new month: ${newMonth}`);
+    interaction.reply(`The new month (${newMonth}) is now active. Historical leaderboard data has been preserved. Fresh entries will be created automatically as players register or report matches.`);
   } else if (commandName === 'undo_match') {
     if (!interaction.member.permissions.has('Administrator')) {
       return interaction.reply('You do not have permission to undo matches.');
