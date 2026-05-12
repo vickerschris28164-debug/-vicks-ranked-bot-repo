@@ -266,11 +266,9 @@ client.on('interactionCreate', async interaction => {
       if (rows.length === 0) {
         embed.setDescription('No players registered yet.');
       } else {
-        let description = '';
         rows.forEach((row, index) => {
-          description += `${index + 1}. ${row.name}: ${row.points} points\n`;
+          embed.addFields({ name: `${index + 1}. ${row.name}`, value: `${row.points} points`, inline: false });
         });
-        embed.setDescription(description);
       }
 
       interaction.reply({ embeds: [embed] });
@@ -473,12 +471,19 @@ client.on('interactionCreate', async interaction => {
     const points = interaction.options.getInteger('points');
     const month = getCurrentMonth();
 
-    db.run(`UPDATE players SET points = ? WHERE id = ? AND month = ?`, [points, player.id, month], function(err) {
-      if (err) {
-        console.error(err);
-        return interaction.reply('Error setting score.');
+    ensurePlayerForMonth(player.id, player.username, month, (ensureErr) => {
+      if (ensureErr) {
+        console.error('set_score ensure error:', ensureErr);
+        return interaction.reply('Error preparing player record.');
       }
-      interaction.reply(`${player.username}'s score has been set to ${points} points.`);
+
+      db.run(`UPDATE players SET points = ? WHERE id = ? AND month = ?`, [points, player.id, month], function(err) {
+        if (err) {
+          console.error(err);
+          return interaction.reply('Error setting score.');
+        }
+        interaction.reply(`${player.username}'s score has been set to ${points} points.`);
+      });
     });
   }
 });
