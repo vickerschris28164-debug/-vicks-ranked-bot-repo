@@ -33,6 +33,17 @@ db.serialize(() => {
     PRIMARY KEY (id, month)
   )`);
 
+  db.run(`CREATE TABLE IF NOT EXISTS archived_leaderboards (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    month TEXT,
+    player_id TEXT,
+    player_name TEXT,
+    final_points INTEGER,
+    wins INTEGER,
+    losses INTEGER,
+    archived_at DATETIME DEFAULT CURRENT_TIMESTAMP
+  )`);
+
   db.run(`CREATE TABLE IF NOT EXISTS matches (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     winner_id TEXT,
@@ -352,16 +363,77 @@ client.on('interactionCreate', async interaction => {
       return interaction.reply('You do not have permission to reset the leaderboard.');
     }
 
-    const newMonth = getCurrentMonth();
-    // Reset points to 0 for current month? Or archive?
-    // For simplicity, just reset points
-    db.run(`UPDATE players SET points = 0 WHERE month = ?`, [newMonth], function(err) {
-      if (err) {
-        console.error(err);
-        return interaction.reply('Error resetting leaderboard.');
+    await interaction.deferReply();
+
+    const archiveMonth = getCurrentMonth();
+
+    // Fetch all players for the current month along with their win/loss counts
+    db.all(
+      `SELECT
+         p.id AS player_id,
+         p.name AS player_name,
+         p.points AS final_points,
+         COALESCE(w.wins, 0) AS wins,
+         COALESCE(l.losses, 0) AS losses
+       FROM players p
+       LEFT JOIN (
+         SELECT winner_id, COUNT(*) AS wins
+         FROM matches WHERE month = ?
+         GROUP BY winner_id
+       ) w ON w.winner_id = p.id
+       LEFT JOIN (
+         SELECT loser_id, COUNT(*) AS losses
+         FROM matches WHERE month = ?
+         GROUP BY loser_id
+       ) l ON l.loser_id = p.id
+       WHERE p.month = ?`,
+      [archiveMonth, archiveMonth, archiveMonth],
+      (err, rows) => {
+        if (err) {
+          console.error('Reset monthly fetch error:', err);
+          return interaction.editReply('Error fetching leaderboard data for archiving.');
+        }
+
+        if (rows.length === 0) {
+          // Nothing to archive — just confirm
+          return interaction.editReply(`No players found for **${archiveMonth}**. Nothing to archive.`);
+        }
+
+        // Insert all rows into the archive table
+        const insertStmt = db.prepare(
+          `INSERT INTO archived_leaderboards (month, player_id, player_name, final_points, wins, losses)
+           VALUES (?, ?, ?, ?, ?, ?)`
+        );
+
+        let insertError = null;
+        for (const row of rows) {
+          insertStmt.run(
+            [archiveMonth, row.player_id, row.player_name, row.final_points, row.wins, row.losses],
+            (err2) => { if (err2) insertError = err2; }
+          );
+        }
+
+        insertStmt.finalize((finalizeErr) => {
+          if (finalizeErr || insertError) {
+            console.error('Archive insert error:', finalizeErr || insertError);
+            return interaction.editReply('Error archiving leaderboard data.');
+          }
+
+          // Delete all player rows for the archived month so the new month starts fresh
+          db.run(`DELETE FROM players WHERE month = ?`, [archiveMonth], function(delErr) {
+            if (delErr) {
+              console.error('Reset monthly delete error:', delErr);
+              return interaction.editReply('Leaderboard archived but failed to clear current month data.');
+            }
+
+            console.log(`Archived ${rows.length} player(s) for month ${archiveMonth} and cleared leaderboard.`);
+            interaction.editReply(
+              `✅ **${archiveMonth}** leaderboard archived (${rows.length} player${rows.length === 1 ? '' : 's'}) and reset for the new month.`
+            );
+          });
+        });
       }
-      interaction.reply('Monthly leaderboard has been reset.');
-    });
+    );
   } else if (commandName === 'undo_match') {
     if (!interaction.member.permissions.has('Administrator')) {
       return interaction.reply('You do not have permission to undo matches.');
