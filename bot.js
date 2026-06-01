@@ -164,6 +164,34 @@ client.once('ready', async () => {
           .setDescription('The new score')
           .setRequired(true))
       .setDefaultMemberPermissions(0x0000000000000008), // Administrator
+    new SlashCommandBuilder()
+      .setName('history_list')
+      .setDescription('View all months with leaderboard data'),
+    new SlashCommandBuilder()
+      .setName('history')
+      .setDescription('View leaderboard for a specific month')
+      .addStringOption(option =>
+        option.setName('month')
+          .setDescription('Month in YYYY-MM format (e.g., 2024-01)')
+          .setRequired(true)),
+    new SlashCommandBuilder()
+      .setName('player_history')
+      .setDescription('View a player\'s stats across all months')
+      .addUserOption(option =>
+        option.setName('player')
+          .setDescription('The player to view history for')
+          .setRequired(false)),
+    new SlashCommandBuilder()
+      .setName('match_history')
+      .setDescription('View recent matches')
+      .addIntegerOption(option =>
+        option.setName('limit')
+          .setDescription('Number of matches to display (default: 10)')
+          .setRequired(false))
+      .addStringOption(option =>
+        option.setName('month')
+          .setDescription('Filter by month (optional, YYYY-MM format)')
+          .setRequired(false)),
   ];
 
   await client.application.commands.set(commands);
@@ -340,6 +368,10 @@ client.on('interactionCreate', async interaction => {
         { name: '/report_match', value: 'Report a match result with winner and loser.', inline: false },
         { name: '/leaderboard', value: 'View the current monthly leaderboard.', inline: false },
         { name: '/stats', value: 'Show monthly stats for yourself or another player.', inline: false },
+        { name: '/history_list', value: 'View all months with leaderboard data.', inline: false },
+        { name: '/history', value: 'View leaderboard for a specific month (YYYY-MM format).', inline: false },
+        { name: '/player_history', value: 'View a player\'s stats across all months.', inline: false },
+        { name: '/match_history', value: 'View recent matches with optional month filter.', inline: false },
         { name: '/reset_monthly', value: 'Reset the monthly leaderboard (Admin only).', inline: false },
         { name: '/undo_match', value: 'Undo the last match for a player (Admin only).', inline: false },
         { name: '/set_score', value: 'Set a player score manually (Admin only).', inline: false }
@@ -402,6 +434,129 @@ client.on('interactionCreate', async interaction => {
         return interaction.reply('Error setting score.');
       }
       interaction.reply(`${player.username}'s score has been set to ${points} points.`);
+    });
+  } else if (commandName === 'history_list') {
+    db.all(`SELECT DISTINCT month FROM players ORDER BY month DESC`, (err, rows) => {
+      if (err) {
+        console.error('History list error:', err);
+        return interaction.reply('Error fetching history.');
+      }
+
+      if (!rows || rows.length === 0) {
+        return interaction.reply('No leaderboard history found.');
+      }
+
+      const embed = new EmbedBuilder()
+        .setTitle('Leaderboard History - Available Months')
+        .setColor(0x9370DB)
+        .setDescription(rows.map((row, index) => `${index + 1}. ${row.month}`).join('\n'));
+
+      interaction.reply({ embeds: [embed] });
+    });
+  } else if (commandName === 'history') {
+    const month = interaction.options.getString('month');
+    
+    // Validate month format
+    if (!/^\d{4}-\d{2}$/.test(month)) {
+      return interaction.reply('Invalid month format. Please use YYYY-MM (e.g., 2024-01)');
+    }
+
+    db.all(`SELECT name, points FROM players WHERE month = ? ORDER BY points DESC LIMIT 10`, [month], (err, rows) => {
+      if (err) {
+        console.error('History error:', err);
+        return interaction.reply('Error fetching leaderboard history.');
+      }
+
+      if (!rows || rows.length === 0) {
+        return interaction.reply(`No leaderboard data found for ${month}`);
+      }
+
+      const embed = new EmbedBuilder()
+        .setTitle(`Monthly Leaderboard - ${month}`)
+        .setColor(0x0099FF);
+
+      let description = '';
+      rows.forEach((row, index) => {
+        description += `${index + 1}. ${row.name}: ${row.points} points\n`;
+      });
+      embed.setDescription(description);
+
+      interaction.reply({ embeds: [embed] });
+    });
+  } else if (commandName === 'player_history') {
+    const player = interaction.options.getUser('player') || interaction.user;
+
+    db.all(`SELECT month, points FROM players WHERE id = ? ORDER BY month DESC`, [player.id], (err, playerRows) => {
+      if (err) {
+        console.error('Player history error:', err);
+        return interaction.reply('Error fetching player history.');
+      }
+
+      if (!playerRows || playerRows.length === 0) {
+        return interaction.reply(`${player.username} has no leaderboard history.`);
+      }
+
+      let description = '**Monthly Performance:**\n';
+      let totalPoints = 0;
+      playerRows.forEach((row) => {
+        description += `${row.month}: ${row.points} points\n`;
+        totalPoints += row.points;
+      });
+      description += `\n**Total Points Across All Months:** ${totalPoints}`;
+      description += `\n**Months Active:** ${playerRows.length}`;
+
+      const embed = new EmbedBuilder()
+        .setTitle(`${player.username}'s Leaderboard History`)
+        .setColor(0x00FF99)
+        .setDescription(description);
+
+      interaction.reply({ embeds: [embed] });
+    });
+  } else if (commandName === 'match_history') {
+    await interaction.deferReply();
+
+    const limit = interaction.options.getInteger('limit') || 10;
+    const filterMonth = interaction.options.getString('month');
+    const maxLimit = 50;
+    const actualLimit = Math.min(limit, maxLimit);
+
+    let query = `SELECT m.id, m.winner_id, m.loser_id, m.timestamp, m.month, p1.name as winner_name, p2.name as loser_name FROM matches m JOIN players p1 ON m.winner_id = p1.id JOIN players p2 ON m.loser_id = p2.id`;
+    let params = [];
+
+    if (filterMonth) {
+      if (!/^\d{4}-\d{2}$/.test(filterMonth)) {
+        return interaction.editReply('Invalid month format. Please use YYYY-MM (e.g., 2024-01)');
+      }
+      query += ` WHERE m.month = ?`;
+      params.push(filterMonth);
+    }
+
+    query += ` ORDER BY m.id DESC LIMIT ?`;
+    params.push(actualLimit);
+
+    db.all(query, params, (err, rows) => {
+      if (err) {
+        console.error('Match history error:', err);
+        return interaction.editReply('Error fetching match history.');
+      }
+
+      if (!rows || rows.length === 0) {
+        const monthText = filterMonth ? ` for ${filterMonth}` : '';
+        return interaction.editReply(`No match history found${monthText}.`);
+      }
+
+      let description = '';
+      rows.forEach((row, index) => {
+        const timestamp = new Date(row.timestamp).toLocaleDateString();
+        description += `${index + 1}. **${row.winner_name}** defeated **${row.loser_name}** (${row.month}) - ${timestamp}\n`;
+      });
+
+      const embed = new EmbedBuilder()
+        .setTitle('Recent Match History')
+        .setColor(0xFF6347)
+        .setDescription(description);
+
+      interaction.editReply({ embeds: [embed] });
     });
   }
 });
