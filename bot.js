@@ -285,6 +285,138 @@ function fetchArchivedPlayerStats(playerId, month, callback) {
   );
 }
 
+function determineLevel(points) {
+  if (points >= 20) return 'Legend';
+  if (points >= 10) return 'Elite';
+  if (points >= 5) return 'Challenger';
+  if (points >= 1) return 'Apprentice';
+  if (points === 0) return 'Rookie';
+  return 'Novice';
+}
+
+function determineBadges(stats) {
+  const badges = [];
+  if (!stats) return badges;
+  if (stats.wins >= 10 && stats.winRate >= 80) badges.push('Clutch Winner');
+  if (stats.streakType === 'win' && stats.streak >= 3) badges.push('Hot Streak');
+  if (stats.losses === 0 && stats.wins >= 3) badges.push('Unbeaten');
+  if (stats.winRate >= 60 && stats.wins >= 5) badges.push('Resilient');
+  if (stats.points >= 15) badges.push('Power Player');
+  if (stats.points < 0) badges.push('Battle Tested');
+  if (badges.length === 0) badges.push('Rising Star');
+  return badges;
+}
+
+function getPlayerMonthStats(playerId, month, callback) {
+  if (month === getCurrentMonth()) {
+    db.get(`SELECT points FROM players WHERE id = ? AND month = ?`, [playerId, month], (err, playerRow) => {
+      if (err) return callback(err);
+      if (!playerRow) return callback(null, null);
+
+      db.get(`SELECT COUNT(*) AS wins FROM matches WHERE winner_id = ? AND month = ?`, [playerId, month], (err2, winsRow) => {
+        if (err2) return callback(err2);
+
+        db.get(`SELECT COUNT(*) AS losses FROM matches WHERE loser_id = ? AND month = ?`, [playerId, month], (err3, lossesRow) => {
+          if (err3) return callback(err3);
+
+          db.all(`SELECT winner_id, loser_id FROM matches WHERE (winner_id = ? OR loser_id = ?) AND month = ? ORDER BY id DESC`, [playerId, playerId, month], (err4, matchRows) => {
+            if (err4) return callback(err4);
+
+            let streak = 0;
+            let streakType = null;
+            for (const row of matchRows) {
+              const didWin = row.winner_id === playerId;
+              if (streakType === null) {
+                streakType = didWin ? 'win' : 'loss';
+                streak = 1;
+              } else if ((didWin && streakType === 'win') || (!didWin && streakType === 'loss')) {
+                streak += 1;
+              } else {
+                break;
+              }
+            }
+
+            const wins = winsRow.wins || 0;
+            const losses = lossesRow.losses || 0;
+            const totalMatches = wins + losses;
+            const winRate = totalMatches === 0 ? 0 : Math.round((wins / totalMatches) * 100);
+
+            callback(null, {
+              points: playerRow.points,
+              wins,
+              losses,
+              winRate,
+              streak,
+              streakType,
+            });
+          });
+        });
+      });
+    });
+  } else {
+    fetchArchivedPlayerStats(playerId, month, (err, statsRow) => {
+      if (err) return callback(err);
+      if (!statsRow) return callback(null, null);
+
+      const totalMatches = statsRow.wins + statsRow.losses;
+      const winRate = totalMatches === 0 ? 0 : Math.round((statsRow.wins / totalMatches) * 100);
+      callback(null, {
+        points: statsRow.points,
+        wins: statsRow.wins,
+        losses: statsRow.losses,
+        winRate,
+        streak: statsRow.streak,
+        streakType: statsRow.streakType,
+      });
+    });
+  }
+}
+
+function computeCurrentStreakForPlayer(playerId, month, callback) {
+  db.all(`SELECT winner_id, loser_id FROM matches WHERE (winner_id = ? OR loser_id = ?) AND month = ? ORDER BY id DESC`, [playerId, playerId, month], (err, matchRows) => {
+    if (err) return callback(err);
+
+    let streak = 0;
+    let streakType = null;
+    for (const row of matchRows) {
+      const didWin = row.winner_id === playerId;
+      if (streakType === null) {
+        streakType = didWin ? 'win' : 'loss';
+        streak = 1;
+      } else if ((didWin && streakType === 'win') || (!didWin && streakType === 'loss')) {
+        streak += 1;
+      } else {
+        break;
+      }
+    }
+
+    callback(null, { streak, streakType });
+  });
+}
+
+function computeTopStreaks(month, limit, callback) {
+  db.all(`SELECT id, name FROM players WHERE month = ?`, [month], (err, players) => {
+    if (err) return callback(err);
+    if (!players || players.length === 0) return callback(null, []);
+
+    let pending = players.length;
+    const results = [];
+
+    players.forEach(player => {
+      computeCurrentStreakForPlayer(player.id, month, (err2, streakInfo) => {
+        if (!err2 && streakInfo.streak > 0) {
+          results.push({ name: player.name, ...streakInfo });
+        }
+        pending -= 1;
+        if (pending === 0) {
+          results.sort((a, b) => b.streak - a.streak || (a.streakType === 'win' ? 0 : 1) - (b.streakType === 'win' ? 0 : 1));
+          callback(null, results.slice(0, limit));
+        }
+      });
+    });
+  });
+}
+
 // Register slash commands
 client.once('ready', async () => {
   console.log(`Logged in as ${client.user.tag}!`);
@@ -327,14 +459,43 @@ client.once('ready', async () => {
       .setName('history_months')
       .setDescription('Show months with saved leaderboard history'),
     new SlashCommandBuilder()
-      .setName('monthly_summary')
-      .setDescription('Show a summary of recent monthly leaderboards')
-      .addIntegerOption(option =>
-        option.setName('months')
-          .setDescription('Number of recent months to summarize (default 3)')
+      .setName('top_streaks')
+      .setDescription('Show the current top win streaks'),
+    new SlashCommandBuilder()
+      .setName('profile')
+      .setDescription('Show a player profile with level and badges')
+      .addUserOption(option =>
+        option.setName('player')
+          .setDescription('The player to view')
+          .setRequired(false))
+      .addStringOption(option =>
+        option.setName('month')
+          .setDescription('Month to view (YYYY-MM). Leave empty for current month.')
           .setRequired(false)),
     new SlashCommandBuilder()
-      .setName('stats')
+      .setName('winrate')
+      .setDescription('Show a player win rate')
+      .addUserOption(option =>
+        option.setName('player')
+          .setDescription('The player to view')
+          .setRequired(false))
+      .addStringOption(option =>
+        option.setName('month')
+          .setDescription('Month to view (YYYY-MM). Leave empty for current month.')
+          .setRequired(false)),
+    new SlashCommandBuilder()
+      .setName('shoutout')
+      .setDescription('Give a player a public shoutout')
+      .addUserOption(option =>
+        option.setName('player')
+          .setDescription('The player to shoutout')
+          .setRequired(true))
+      .addStringOption(option =>
+        option.setName('reason')
+          .setDescription('Reason for the shoutout')
+          .setRequired(false)),
+    new SlashCommandBuilder()
+      .setName('monthly_summary')
       .setDescription('Show leaderboard stats for a player')
       .addUserOption(option =>
         option.setName('player')
@@ -518,6 +679,101 @@ client.on('interactionCreate', async interaction => {
 
       interaction.reply({ embeds: [embed] });
     });
+  } else if (commandName === 'top_streaks') {
+    const month = getCurrentMonth();
+    computeTopStreaks(month, 10, (err, streaks) => {
+      if (err) {
+        console.error('Top streaks error:', err);
+        return interaction.reply('Error fetching top streaks.');
+      }
+
+      const embed = new EmbedBuilder()
+        .setTitle(`Top Win Streaks - ${month}`)
+        .setColor(0x00BBFF);
+
+      if (streaks.length === 0) {
+        embed.setDescription('No active streaks found for this month.');
+      } else {
+        embed.setDescription(streaks.map((item, index) => `${index + 1}. ${item.name} — ${item.streak} ${item.streakType}`).join('\n'));
+      }
+
+      interaction.reply({ embeds: [embed] });
+    });
+  } else if (commandName === 'profile') {
+    const player = interaction.options.getUser('player') || interaction.user;
+    const monthArg = interaction.options.getString('month');
+    const month = monthArg ? parseMonthInput(monthArg) : getCurrentMonth();
+    if (monthArg && !month) {
+      return interaction.reply('Invalid month format. Use YYYY-MM.');
+    }
+
+    getPlayerMonthStats(player.id, month, (err, stats) => {
+      if (err) {
+        console.error('Profile error:', err);
+        return interaction.reply('Error fetching profile.');
+      }
+      if (!stats) {
+        return interaction.reply(`${player.username} has no data for ${month}.`);
+      }
+
+      const level = determineLevel(stats.points);
+      const badges = determineBadges(stats);
+      const streakText = stats.streakType ? `${stats.streak} ${stats.streakType}${stats.streak === 1 ? '' : 's'}` : 'None';
+
+      const embed = new EmbedBuilder()
+        .setTitle(`${player.username}'s Profile - ${month}`)
+        .setColor(0x00FFAA)
+        .addFields(
+          { name: 'Points', value: `${stats.points}`, inline: true },
+          { name: 'Level', value: level, inline: true },
+          { name: 'Win Rate', value: `${stats.winRate}%`, inline: true },
+          { name: 'Wins', value: `${stats.wins}`, inline: true },
+          { name: 'Losses', value: `${stats.losses}`, inline: true },
+          { name: 'Streak', value: streakText, inline: true },
+          { name: 'Badges', value: badges.join(', '), inline: false }
+        );
+
+      interaction.reply({ embeds: [embed] });
+    });
+  } else if (commandName === 'winrate') {
+    const player = interaction.options.getUser('player') || interaction.user;
+    const monthArg = interaction.options.getString('month');
+    const month = monthArg ? parseMonthInput(monthArg) : getCurrentMonth();
+    if (monthArg && !month) {
+      return interaction.reply('Invalid month format. Use YYYY-MM.');
+    }
+
+    getPlayerMonthStats(player.id, month, (err, stats) => {
+      if (err) {
+        console.error('Winrate error:', err);
+        return interaction.reply('Error fetching win rate.');
+      }
+      if (!stats) {
+        return interaction.reply(`${player.username} has no data for ${month}.`);
+      }
+
+      const totalMatches = stats.wins + stats.losses;
+      const embed = new EmbedBuilder()
+        .setTitle(`${player.username}'s Win Rate - ${month}`)
+        .setColor(0x00FFAA)
+        .addFields(
+          { name: 'Win Rate', value: `${stats.winRate}%`, inline: true },
+          { name: 'Record', value: `${stats.wins}W / ${stats.losses}L`, inline: true },
+          { name: 'Matches', value: `${totalMatches}`, inline: true }
+        );
+
+      interaction.reply({ embeds: [embed] });
+    });
+  } else if (commandName === 'shoutout') {
+    const player = interaction.options.getUser('player');
+    const reason = interaction.options.getString('reason') || 'Great performance!';
+    const embed = new EmbedBuilder()
+      .setTitle('Player Shoutout!')
+      .setColor(0xFFD700)
+      .setDescription(`${player} deserves a shoutout!\n\n**Reason:** ${reason}`)
+      .setFooter({ text: `Shoutout by ${interaction.user.username}` });
+
+    interaction.reply({ embeds: [embed] });
   } else if (commandName === 'monthly_summary') {
     const months = interaction.options.getInteger('months') || 3;
     if (months <= 0 || months > 12) {
@@ -684,6 +940,10 @@ client.on('interactionCreate', async interaction => {
         { name: '/leaderboard_history', value: 'View leaderboard history for a previous month.', inline: false },
         { name: '/history_months', value: 'Show months with saved leaderboard history.', inline: false },
         { name: '/monthly_summary', value: 'Summarize recent monthly leaderboards.', inline: false },
+        { name: '/top_streaks', value: 'Show the current top win streaks.', inline: false },
+        { name: '/profile', value: 'Show a player profile with level and badges.', inline: false },
+        { name: '/winrate', value: 'Show a player win rate.', inline: false },
+        { name: '/shoutout', value: 'Give a player a public shoutout.', inline: false },
         { name: '/stats', value: 'Show monthly stats for yourself or another player.', inline: false },
         { name: '/reset_monthly', value: 'Reset the monthly leaderboard and save the month to history (Admin only).', inline: false },
         { name: '/undo_match', value: 'Undo the last match for a player (Admin only).', inline: false },
@@ -711,12 +971,12 @@ client.on('interactionCreate', async interaction => {
       }
 
       if (count === 0) {
-        return interaction.editReply(`No players found for **${archiveMonth}**. Nothing to archive.`);
+        return interaction.editReply(`No players found for **${targetMonth}**. Nothing to archive.`);
       }
 
-      console.log(`Archived ${count} player(s) for month ${archiveMonth} and cleared leaderboard.`);
+      console.log(`Archived ${count} player(s) for month ${targetMonth} and cleared leaderboard.`);
       interaction.editReply(
-        `✅ **${archiveMonth}** leaderboard archived (${count} player${count === 1 ? '' : 's'}) and reset for the new month.`
+        `✅ **${targetMonth}** leaderboard archived (${count} player${count === 1 ? '' : 's'}) and reset for the new month.`
       );
     });
   } else if (commandName === 'undo_match') {

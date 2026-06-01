@@ -29,6 +29,10 @@ A Discord bot for managing ranked Pokémon TCG matches and monthly leaderboards 
 - `/leaderboard_history [month:YYYY-MM]`: View a leaderboard for a past month
 - `/history_months`: List months with saved leaderboard history
 - `/monthly_summary [months:int]`: Summarize recent monthly leaderboards
+- `/top_streaks`: Show the current top win streaks
+- `/profile [player:@user] [month:YYYY-MM]`: View a player profile with level and badges
+- `/winrate [player:@user] [month:YYYY-MM]`: View a player win rate
+- `/shoutout player:@user reason:...`: Give a player a public shoutout
 - `/stats [player:@user] [month:YYYY-MM]`: View monthly stats for yourself or another player
 - `/help`: Show bot commands and usage
 - `/reset_monthly [month:YYYY-MM]`: Reset and archive a month (Admin only)
