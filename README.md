@@ -26,16 +26,24 @@ A Discord bot for managing ranked Pokémon TCG matches and monthly leaderboards 
 - `/report_match winner:@user loser:@user`: Report a match result
 - `/leaderboard`: View the current monthly leaderboard
 - `/stats [player:@user]`: View monthly stats for yourself or another player
+- `/history_list`: View all months with leaderboard data
+- `/history month:YYYY-MM`: View leaderboard for a specific past month
+- `/player_history [player:@user]`: View a player's stats across all months
+- `/match_history [limit:number] [month:YYYY-MM]`: View recent matches (optionally filter by month)
 - `/help`: Show bot commands and usage
 - `/reset_monthly`: Reset the monthly leaderboard (Admin only)
+- `/undo_match player:@user`: Undo the last match for a player (Admin only)
+- `/set_score player:@user points:number`: Set a player's score manually (Admin only)
 
 ## How It Works
 
-- Each player starts with 0 points
+- Each player starts with 0 points each month
 - Winner of a match gains 1 point, loser loses 1 point
 - Leaderboard is sorted by points (descending)
-- Leaderboard resets to 0 points on the 1st of each month
-- Matches are recorded with timestamp and reporter
+- Monthly leaderboards reset to 0 points on the 1st of each month, but all historical data is preserved
+- Matches are recorded with timestamp, reporter, and associated month
+- All past months' leaderboards and match history can be viewed using history commands
+- Players can track their performance across multiple months
 
 ## Database
 
