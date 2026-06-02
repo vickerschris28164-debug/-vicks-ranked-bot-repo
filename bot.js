@@ -1,4 +1,4 @@
-const { Client, GatewayIntentBits, Partials, SlashCommandBuilder, EmbedBuilder } = require('discord.js');
+const { Client, GatewayIntentBits, Partials, SlashCommandBuilder, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle } = require('discord.js');
 const sqlite3 = require('sqlite3').verbose();
 const cron = require('node-cron');
 const path = require('path');
@@ -60,6 +60,17 @@ db.serialize(() => {
     loser_id TEXT,
     reported_by TEXT,
     timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
+    month TEXT
+  )`);
+
+  db.run(`CREATE TABLE IF NOT EXISTS pending_reports (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    winner_id TEXT,
+    winner_name TEXT,
+    loser_id TEXT,
+    loser_name TEXT,
+    reported_by TEXT,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     month TEXT
   )`);
 
@@ -125,6 +136,29 @@ function parseMonthInput(input) {
   if (!input) return null;
   const month = input.trim();
   return /^\d{4}-(0[1-9]|1[0-2])$/.test(month) ? month : null;
+}
+
+function canReportMatch(winnerId, loserId, callback) {
+  db.get(
+    `SELECT COUNT(*) AS count FROM matches
+     WHERE ((winner_id = ? AND loser_id = ?) OR (winner_id = ? AND loser_id = ?))
+       AND timestamp >= datetime('now','-2 hours')`,
+    [winnerId, loserId, loserId, winnerId],
+    (err, row) => {
+      if (err) return callback(err);
+      if (row && row.count > 0) return callback(null, false);
+      db.get(
+        `SELECT COUNT(*) AS count FROM pending_reports
+         WHERE ((winner_id = ? AND loser_id = ?) OR (winner_id = ? AND loser_id = ?))
+           AND created_at >= datetime('now','-2 hours')`,
+        [winnerId, loserId, loserId, winnerId],
+        (err2, row2) => {
+          if (err2) return callback(err2);
+          callback(null, !row2 || row2.count === 0);
+        }
+      );
+    }
+  );
 }
 
 function getPreviousMonth() {
@@ -544,6 +578,76 @@ client.once('ready', async () => {
 
 // Handle interactions
 client.on('interactionCreate', async interaction => {
+  if (interaction.isButton()) {
+    const customId = interaction.customId || '';
+    if (!customId.startsWith('confirm_match_') && !customId.startsWith('reject_match_')) return;
+
+    const [action, , idString] = customId.split('_');
+    const pendingId = parseInt(idString, 10);
+    if (isNaN(pendingId)) {
+      return interaction.reply({ content: 'Invalid match confirmation request.', ephemeral: true });
+    }
+
+    db.get(`SELECT * FROM pending_reports WHERE id = ?`, [pendingId], (err, row) => {
+      if (err) {
+        console.error('Pending report lookup error:', err);
+        return interaction.reply({ content: 'Error processing match confirmation.', ephemeral: true });
+      }
+      if (!row) {
+        return interaction.reply({ content: 'This match report is no longer pending or has already been resolved.', ephemeral: true });
+      }
+      if (interaction.user.id !== row.loser_id) {
+        return interaction.reply({ content: 'Only the reported loser can confirm or reject this match.', ephemeral: true });
+      }
+
+      if (action === 'reject') {
+        db.run(`DELETE FROM pending_reports WHERE id = ?`, [pendingId], err2 => {
+          if (err2) console.error('Pending report delete error:', err2);
+          interaction.update({ content: `Match report rejected by ${interaction.user.username}.`, components: [] });
+        });
+        return;
+      }
+
+      // Confirm the match and apply it to the leaderboard
+      ensurePlayerForMonth(row.winner_id, row.winner_name, row.month, (err2) => {
+        if (err2) {
+          console.error('Winner ensure error on confirmation:', err2);
+          return interaction.reply({ content: 'Error confirming match.', ephemeral: true });
+        }
+
+        ensurePlayerForMonth(row.loser_id, row.loser_name, row.month, (err3) => {
+          if (err3) {
+            console.error('Loser ensure error on confirmation:', err3);
+            return interaction.reply({ content: 'Error confirming match.', ephemeral: true });
+          }
+
+          db.run(
+            `INSERT INTO matches (winner_id, loser_id, reported_by, month) VALUES (?, ?, ?, ?)`,
+            [row.winner_id, row.loser_id, row.reported_by, row.month],
+            function(err4) {
+              if (err4) {
+                console.error('Match insert error on confirmation:', err4);
+                return interaction.reply({ content: 'Error saving confirmed match.', ephemeral: true });
+              }
+
+              db.run(`UPDATE players SET points = points + 1 WHERE id = ? AND month = ?`, [row.winner_id, row.month], err5 => {
+                if (err5) console.error('Winner points update error on confirmation:', err5);
+              });
+              db.run(`UPDATE players SET points = points - 1 WHERE id = ? AND month = ?`, [row.loser_id, row.month], err6 => {
+                if (err6) console.error('Loser points update error on confirmation:', err6);
+              });
+              db.run(`DELETE FROM pending_reports WHERE id = ?`, [pendingId], err7 => {
+                if (err7) console.error('Pending report delete error on confirmation:', err7);
+                interaction.update({ content: `Match confirmed! ${row.winner_name} defeated ${row.loser_name}.`, components: [] });
+              });
+            }
+          );
+        });
+      });
+    });
+    return;
+  }
+
   if (!interaction.isChatInputCommand()) return;
 
   const { commandName } = interaction;
@@ -594,20 +698,42 @@ client.on('interactionCreate', async interaction => {
           return interaction.editReply('Error preparing loser registration.');
         }
 
-        db.run(`INSERT INTO matches (winner_id, loser_id, reported_by, month) VALUES (?, ?, ?, ?)`, [winner.id, loser.id, reporter, month], function(err3) {
+        canReportMatch(winner.id, loser.id, (err3, allowed) => {
           if (err3) {
-            console.error('Match insert error:', err3);
-            return interaction.editReply('Error reporting match. Please try again.');
+            console.error('Cooldown check error:', err3);
+            return interaction.editReply('Error checking match cooldown. Please try again.');
+          }
+          if (!allowed) {
+            return interaction.editReply('You can only report a match against the same opponent once every 2 hours. Wait until the previous match is confirmed or the cooldown expires.');
           }
 
-          db.run(`UPDATE players SET points = points + 1 WHERE id = ? AND month = ?`, [winner.id, month], function(err4) {
-            if (err4) console.error('Winner points update error:', err4);
-          });
-          db.run(`UPDATE players SET points = points - 1 WHERE id = ? AND month = ?`, [loser.id, month], function(err5) {
-            if (err5) console.error('Loser points update error:', err5);
-          });
+          db.run(
+            `INSERT INTO pending_reports (winner_id, winner_name, loser_id, loser_name, reported_by, month) VALUES (?, ?, ?, ?, ?, ?)`,
+            [winner.id, winner.username, loser.id, loser.username, reporter, month],
+            function(err4) {
+              if (err4) {
+                console.error('Pending report insert error:', err4);
+                return interaction.editReply('Error reporting match. Please try again.');
+              }
 
-          interaction.editReply(`Match reported! ${winner.username} defeated ${loser.username}.`);
+              const pendingId = this.lastID;
+              const actionRow = new ActionRowBuilder().addComponents(
+                new ButtonBuilder()
+                  .setCustomId(`confirm_match_${pendingId}`)
+                  .setLabel('Confirm')
+                  .setStyle(ButtonStyle.Success),
+                new ButtonBuilder()
+                  .setCustomId(`reject_match_${pendingId}`)
+                  .setLabel('Reject')
+                  .setStyle(ButtonStyle.Danger)
+              );
+
+              interaction.editReply({
+                content: `Match reported! ${winner.username} defeated ${loser.username}. Waiting for ${loser.username} to confirm the result.`,
+                components: [actionRow]
+              });
+            }
+          );
         });
       });
     });
@@ -935,7 +1061,7 @@ client.on('interactionCreate', async interaction => {
       .setDescription('Use these commands to manage rankings, view stats, and access month history.')
       .addFields(
         { name: '/register', value: 'Register yourself for the monthly leaderboard.', inline: false },
-        { name: '/report_match', value: 'Report a match result with winner and loser.', inline: false },
+        { name: '/report_match', value: 'Report a match result with winner and loser (loser must confirm).', inline: false },
         { name: '/leaderboard', value: 'View the current monthly leaderboard.', inline: false },
         { name: '/leaderboard_history', value: 'View leaderboard history for a previous month.', inline: false },
         { name: '/history_months', value: 'Show months with saved leaderboard history.', inline: false },
