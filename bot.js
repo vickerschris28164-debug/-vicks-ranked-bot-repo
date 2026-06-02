@@ -74,6 +74,13 @@ db.serialize(() => {
     month TEXT
   )`);
 
+  db.run(`CREATE TABLE IF NOT EXISTS pending_actions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    action_type TEXT,
+    payload TEXT,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+  )`);
+
   db.all(`PRAGMA table_info(players)`, (err, rows) => {
     if (err) {
       return console.error('Player table info error:', err);
@@ -159,6 +166,20 @@ function canReportMatch(winnerId, loserId, callback) {
       );
     }
   );
+}
+
+function storePendingAction(type, payload, callback) {
+  db.run(`INSERT INTO pending_actions (action_type, payload) VALUES (?, ?)`, [type, JSON.stringify(payload)], function(err) {
+    callback(err, this.lastID);
+  });
+}
+
+function getPendingActionById(id, callback) {
+  db.get(`SELECT * FROM pending_actions WHERE id = ?`, [id], callback);
+}
+
+function deletePendingActionById(id, callback) {
+  db.run(`DELETE FROM pending_actions WHERE id = ?`, [id], callback);
 }
 
 function getPreviousMonth() {
@@ -580,71 +601,181 @@ client.once('ready', async () => {
 client.on('interactionCreate', async interaction => {
   if (interaction.isButton()) {
     const customId = interaction.customId || '';
-    if (!customId.startsWith('confirm_match_') && !customId.startsWith('reject_match_')) return;
 
-    const [action, , idString] = customId.split('_');
-    const pendingId = parseInt(idString, 10);
-    if (isNaN(pendingId)) {
-      return interaction.reply({ content: 'Invalid match confirmation request.', ephemeral: true });
-    }
-
-    db.get(`SELECT * FROM pending_reports WHERE id = ?`, [pendingId], (err, row) => {
-      if (err) {
-        console.error('Pending report lookup error:', err);
-        return interaction.reply({ content: 'Error processing match confirmation.', ephemeral: true });
-      }
-      if (!row) {
-        return interaction.reply({ content: 'This match report is no longer pending or has already been resolved.', ephemeral: true });
-      }
-      if (interaction.user.id !== row.loser_id) {
-        return interaction.reply({ content: 'Only the reported loser can confirm or reject this match.', ephemeral: true });
+    if (customId.startsWith('confirm_match_') || customId.startsWith('reject_match_')) {
+      const [action, , idString] = customId.split('_');
+      const pendingId = parseInt(idString, 10);
+      if (isNaN(pendingId)) {
+        return interaction.reply({ content: 'Invalid match confirmation request.', ephemeral: true });
       }
 
-      if (action === 'reject') {
-        db.run(`DELETE FROM pending_reports WHERE id = ?`, [pendingId], err2 => {
-          if (err2) console.error('Pending report delete error:', err2);
-          interaction.update({ content: `Match report rejected by ${interaction.user.username}.`, components: [] });
-        });
-        return;
-      }
-
-      // Confirm the match and apply it to the leaderboard
-      ensurePlayerForMonth(row.winner_id, row.winner_name, row.month, (err2) => {
-        if (err2) {
-          console.error('Winner ensure error on confirmation:', err2);
-          return interaction.reply({ content: 'Error confirming match.', ephemeral: true });
+      db.get(`SELECT * FROM pending_reports WHERE id = ?`, [pendingId], (err, row) => {
+        if (err) {
+          console.error('Pending report lookup error:', err);
+          return interaction.reply({ content: 'Error processing match confirmation.', ephemeral: true });
+        }
+        if (!row) {
+          return interaction.reply({ content: 'This match report is no longer pending or has already been resolved.', ephemeral: true });
+        }
+        if (interaction.user.id !== row.loser_id) {
+          return interaction.reply({ content: 'Only the reported loser can confirm or reject this match.', ephemeral: true });
         }
 
-        ensurePlayerForMonth(row.loser_id, row.loser_name, row.month, (err3) => {
-          if (err3) {
-            console.error('Loser ensure error on confirmation:', err3);
+        if (action === 'reject') {
+          db.run(`DELETE FROM pending_reports WHERE id = ?`, [pendingId], err2 => {
+            if (err2) console.error('Pending report delete error:', err2);
+            interaction.update({ content: `Match report rejected by ${interaction.user.username}.`, components: [] });
+          });
+          return;
+        }
+
+        // Confirm the match and apply it to the leaderboard
+        ensurePlayerForMonth(row.winner_id, row.winner_name, row.month, (err2) => {
+          if (err2) {
+            console.error('Winner ensure error on confirmation:', err2);
             return interaction.reply({ content: 'Error confirming match.', ephemeral: true });
           }
 
-          db.run(
-            `INSERT INTO matches (winner_id, loser_id, reported_by, month) VALUES (?, ?, ?, ?)`,
-            [row.winner_id, row.loser_id, row.reported_by, row.month],
-            function(err4) {
-              if (err4) {
-                console.error('Match insert error on confirmation:', err4);
-                return interaction.reply({ content: 'Error saving confirmed match.', ephemeral: true });
-              }
-
-              db.run(`UPDATE players SET points = points + 1 WHERE id = ? AND month = ?`, [row.winner_id, row.month], err5 => {
-                if (err5) console.error('Winner points update error on confirmation:', err5);
-              });
-              db.run(`UPDATE players SET points = points - 1 WHERE id = ? AND month = ?`, [row.loser_id, row.month], err6 => {
-                if (err6) console.error('Loser points update error on confirmation:', err6);
-              });
-              db.run(`DELETE FROM pending_reports WHERE id = ?`, [pendingId], err7 => {
-                if (err7) console.error('Pending report delete error on confirmation:', err7);
-                interaction.update({ content: `Match confirmed! ${row.winner_name} defeated ${row.loser_name}.`, components: [] });
-              });
+          ensurePlayerForMonth(row.loser_id, row.loser_name, row.month, (err3) => {
+            if (err3) {
+              console.error('Loser ensure error on confirmation:', err3);
+              return interaction.reply({ content: 'Error confirming match.', ephemeral: true });
             }
-          );
+
+            db.run(
+              `INSERT INTO matches (winner_id, loser_id, reported_by, month) VALUES (?, ?, ?, ?)`,
+              [row.winner_id, row.loser_id, row.reported_by, row.month],
+              function(err4) {
+                if (err4) {
+                  console.error('Match insert error on confirmation:', err4);
+                  return interaction.reply({ content: 'Error saving confirmed match.', ephemeral: true });
+                }
+
+                db.run(`UPDATE players SET points = points + 1 WHERE id = ? AND month = ?`, [row.winner_id, row.month], err5 => {
+                  if (err5) console.error('Winner points update error on confirmation:', err5);
+                });
+                db.run(`UPDATE players SET points = points - 1 WHERE id = ? AND month = ?`, [row.loser_id, row.month], err6 => {
+                  if (err6) console.error('Loser points update error on confirmation:', err6);
+                });
+                db.run(`DELETE FROM pending_reports WHERE id = ?`, [pendingId], err7 => {
+                  if (err7) console.error('Pending report delete error on confirmation:', err7);
+                  interaction.update({ content: `Match confirmed! ${row.winner_name} defeated ${row.loser_name}.`, components: [] });
+                });
+              }
+            );
+          });
         });
       });
-    });
+      return;
+    }
+
+    if (customId.startsWith('confirm_reset_month_') || customId.startsWith('reject_reset_month_')) {
+      const [action, , , idString] = customId.split('_');
+      const pendingId = parseInt(idString, 10);
+      if (isNaN(pendingId)) {
+        return interaction.reply({ content: 'Invalid reset confirmation request.', ephemeral: true });
+      }
+
+      getPendingActionById(pendingId, (err, pending) => {
+        if (err) {
+          console.error('Pending action lookup error:', err);
+          return interaction.reply({ content: 'Error processing reset confirmation.', ephemeral: true });
+        }
+        if (!pending) {
+          return interaction.reply({ content: 'This reset request is no longer pending or has already been resolved.', ephemeral: true });
+        }
+        const payload = JSON.parse(pending.payload);
+        if (interaction.user.id !== payload.requestedBy) {
+          return interaction.reply({ content: 'Only the admin who requested this reset can confirm or reject it.', ephemeral: true });
+        }
+
+        if (action === 'reject') {
+          deletePendingActionById(pendingId, err2 => {
+            if (err2) console.error('Pending reset delete error:', err2);
+            interaction.update({ content: `Monthly reset cancelled by ${interaction.user.username}.`, components: [] });
+          });
+          return;
+        }
+
+        archiveMonth(payload.month, (err2, count) => {
+          if (err2) {
+            console.error('Reset monthly archive error:', err2);
+            return interaction.update({ content: 'Error archiving leaderboard data.', components: [] });
+          }
+
+          deletePendingActionById(pendingId, err3 => {
+            if (err3) console.error('Pending reset delete error:', err3);
+            if (count === 0) {
+              interaction.update({ content: `No players found for **${payload.month}**. Nothing was archived.`, components: [] });
+            } else {
+              interaction.update({ content: `✅ **${payload.month}** leaderboard archived (${count} player${count === 1 ? '' : 's'}) and reset for the new month.`, components: [] });
+            }
+          });
+        });
+      });
+      return;
+    }
+
+    if (customId.startsWith('confirm_undo_match_') || customId.startsWith('reject_undo_match_')) {
+      const [action, , , idString] = customId.split('_');
+      const pendingId = parseInt(idString, 10);
+      if (isNaN(pendingId)) {
+        return interaction.reply({ content: 'Invalid undo confirmation request.', ephemeral: true });
+      }
+
+      getPendingActionById(pendingId, (err, pending) => {
+        if (err) {
+          console.error('Pending action lookup error:', err);
+          return interaction.reply({ content: 'Error processing undo confirmation.', ephemeral: true });
+        }
+        if (!pending) {
+          return interaction.reply({ content: 'This undo request is no longer pending or has already been resolved.', ephemeral: true });
+        }
+        const payload = JSON.parse(pending.payload);
+        if (interaction.user.id !== payload.requestedBy) {
+          return interaction.reply({ content: 'Only the admin who requested this undo can confirm or reject it.', ephemeral: true });
+        }
+
+        if (action === 'reject') {
+          deletePendingActionById(pendingId, err2 => {
+            if (err2) console.error('Pending undo delete error:', err2);
+            interaction.update({ content: `Undo cancelled by ${interaction.user.username}.`, components: [] });
+          });
+          return;
+        }
+
+        db.get(`SELECT id, winner_id, loser_id FROM matches WHERE id = ?`, [payload.matchId], (err2, row) => {
+          if (err2 || !row) {
+            if (err2) console.error('Undo match lookup error:', err2);
+            deletePendingActionById(pendingId, () => {});
+            return interaction.update({ content: 'The match could not be found or was already removed.', components: [] });
+          }
+
+          if (payload.playerId === row.winner_id) {
+            db.run(`UPDATE players SET points = points - 1 WHERE id = ? AND month = ?`, [payload.playerId, payload.month], err3 => {
+              if (err3) console.error('Undo winner points update error:', err3);
+            });
+          } else {
+            db.run(`UPDATE players SET points = points + 1 WHERE id = ? AND month = ?`, [payload.playerId, payload.month], err3 => {
+              if (err3) console.error('Undo loser points update error:', err3);
+            });
+          }
+
+          db.run(`DELETE FROM matches WHERE id = ?`, [payload.matchId], err3 => {
+            if (err3) {
+              console.error('Undo match delete error:', err3);
+              return interaction.update({ content: 'Error undoing match.', components: [] });
+            }
+            deletePendingActionById(pendingId, err4 => {
+              if (err4) console.error('Pending undo delete error:', err4);
+              interaction.update({ content: `Last match for ${payload.playerName} has been undone.`, components: [] });
+            });
+          });
+        });
+      });
+      return;
+    }
+
     return;
   }
 
@@ -1071,8 +1202,8 @@ client.on('interactionCreate', async interaction => {
         { name: '/winrate', value: 'Show a player win rate.', inline: false },
         { name: '/shoutout', value: 'Give a player a public shoutout.', inline: false },
         { name: '/stats', value: 'Show monthly stats for yourself or another player.', inline: false },
-        { name: '/reset_monthly', value: 'Reset the monthly leaderboard and save the month to history (Admin only).', inline: false },
-        { name: '/undo_match', value: 'Undo the last match for a player (Admin only).', inline: false },
+        { name: '/reset_monthly', value: 'Reset the monthly leaderboard and save the month to history (Admin only, requires confirmation).', inline: false },
+        { name: '/undo_match', value: 'Undo the last match for a player (Admin only, requires confirmation).', inline: false },
         { name: '/set_score', value: 'Set a player score manually (Admin only).', inline: false }
       );
 
@@ -1090,20 +1221,27 @@ client.on('interactionCreate', async interaction => {
       return interaction.editReply('Invalid month format. Use YYYY-MM.');
     }
 
-    archiveMonth(targetMonth, (err, count) => {
+    storePendingAction('reset_month', { month: targetMonth, requestedBy: interaction.user.id }, (err, pendingId) => {
       if (err) {
-        console.error('Reset monthly archive error:', err);
-        return interaction.editReply('Error archiving leaderboard data.');
+        console.error('Pending reset create error:', err);
+        return interaction.editReply('Error creating reset confirmation. Please try again.');
       }
 
-      if (count === 0) {
-        return interaction.editReply(`No players found for **${targetMonth}**. Nothing to archive.`);
-      }
-
-      console.log(`Archived ${count} player(s) for month ${targetMonth} and cleared leaderboard.`);
-      interaction.editReply(
-        `✅ **${targetMonth}** leaderboard archived (${count} player${count === 1 ? '' : 's'}) and reset for the new month.`
+      const actionRow = new ActionRowBuilder().addComponents(
+        new ButtonBuilder()
+          .setCustomId(`confirm_reset_month_${pendingId}`)
+          .setLabel('Confirm Reset')
+          .setStyle(ButtonStyle.Danger),
+        new ButtonBuilder()
+          .setCustomId(`reject_reset_month_${pendingId}`)
+          .setLabel('Cancel')
+          .setStyle(ButtonStyle.Secondary)
       );
+
+      interaction.editReply({
+        content: `Are you sure you want to reset the leaderboard for **${targetMonth}**? Click Confirm Reset to proceed.`,
+        components: [actionRow]
+      });
     });
   } else if (commandName === 'undo_match') {
     if (!interaction.member.permissions.has('Administrator')) {
@@ -1119,20 +1257,33 @@ client.on('interactionCreate', async interaction => {
         return interaction.reply('No recent match found for this player.');
       }
 
-      // Reverse the points
-      if (row.winner_id === player.id) {
-        db.run(`UPDATE players SET points = points - 1 WHERE id = ? AND month = ?`, [player.id, month]);
-      } else {
-        db.run(`UPDATE players SET points = points + 1 WHERE id = ? AND month = ?`, [player.id, month]);
-      }
-
-      // Delete the match
-      db.run(`DELETE FROM matches WHERE id = ?`, [row.id], function(err2) {
+      storePendingAction('undo_match', {
+        matchId: row.id,
+        playerId: player.id,
+        playerName: player.username,
+        month,
+        requestedBy: interaction.user.id
+      }, (err2, pendingId) => {
         if (err2) {
-          console.error(err2);
-          return interaction.reply('Error undoing match.');
+          console.error('Pending undo create error:', err2);
+          return interaction.reply('Error creating undo confirmation. Please try again.');
         }
-        interaction.reply(`Last match for ${player.username} has been undone.`);
+
+        const actionRow = new ActionRowBuilder().addComponents(
+          new ButtonBuilder()
+            .setCustomId(`confirm_undo_match_${pendingId}`)
+            .setLabel('Confirm Undo')
+            .setStyle(ButtonStyle.Danger),
+          new ButtonBuilder()
+            .setCustomId(`reject_undo_match_${pendingId}`)
+            .setLabel('Cancel')
+            .setStyle(ButtonStyle.Secondary)
+        );
+
+        interaction.reply({
+          content: `Are you sure you want to undo the last match for ${player.username}? Click Confirm Undo to proceed.`,
+          components: [actionRow]
+        });
       });
     });
   } else if (commandName === 'set_score') {
