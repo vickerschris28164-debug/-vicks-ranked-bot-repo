@@ -591,6 +591,9 @@ client.once('ready', async () => {
           .setDescription('The new score')
           .setRequired(true))
       .setDefaultMemberPermissions(0x0000000000000008), // Administrator
+    new SlashCommandBuilder()
+      .setName('rules')
+      .setDescription('Display the server rules for ranked players'),
   ];
 
   await client.application.commands.set(commands);
@@ -1286,6 +1289,23 @@ client.on('interactionCreate', async interaction => {
         });
       });
     });
+  } else if (commandName === 'rules') {
+    const embed = new EmbedBuilder()
+      .setTitle('📋 Ranked Server Rules')
+      .setColor(0xFF4500)
+      .setDescription('Please read and follow these rules to participate in the ranked leaderboard.')
+      .addFields(
+        { name: '1. Be Respectful', value: 'Be respectful to all players at all times.', inline: false },
+        { name: '2. Honest Reporting', value: 'Report match results honestly and accurately.', inline: false },
+        { name: '3. Fair Play', value: 'No cheating, manipulation, or false reporting.', inline: false },
+        { name: '4. Admin Decisions', value: 'Admins have final say on disputes.', inline: false },
+        { name: '5. Discord ToS', value: 'Follow Discord Terms of Service.', inline: false },
+        { name: '6. Consequences', value: 'Violations may result in removal from the leaderboard.', inline: false },
+        { name: '7. Have Fun', value: 'Have fun and play fairly!', inline: false }
+      )
+      .setFooter({ text: 'Good luck and enjoy the competition!' });
+
+    interaction.reply({ embeds: [embed] });
   } else if (commandName === 'set_score') {
     if (!interaction.member.permissions.has('Administrator')) {
       return interaction.reply('You do not have permission to set scores.');
