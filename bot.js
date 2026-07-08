@@ -17,6 +17,7 @@ const client = new Client({
     GatewayIntentBits.Guilds,
     GatewayIntentBits.GuildMessages,
     GatewayIntentBits.MessageContent,
+    GatewayIntentBits.GuildMembers,
   ],
 });
 
@@ -192,10 +193,32 @@ client.once('ready', async () => {
         option.setName('month')
           .setDescription('Filter by month (optional, YYYY-MM format)')
           .setRequired(false)),
+    new SlashCommandBuilder()
+      .setName('bump')
+      .setDescription('Bump the server on Disboard'),
   ];
 
   await client.application.commands.set(commands);
   console.log('Slash commands registered.');
+});
+
+// Welcome new members
+client.on('guildMemberAdd', (member) => {
+  const channel = member.guild.channels.cache.find(ch => ch.name === 'welcomes-and-boost');
+  if (!channel) {
+    console.error('welcomes-and-boost channel not found');
+    return;
+  }
+
+  const memberCount = member.guild.memberCount;
+  const embed = new EmbedBuilder()
+    .setTitle(`Welcome to The Hideout! 🎮`)
+    .setColor(0x0099FF)
+    .setDescription(`Thanks for joining The Hideout family ${member.user.username}!\n\nYou are member **#${memberCount}**`);
+
+  channel.send({ embeds: [embed] }).catch(err => {
+    console.error(`Could not send welcome message to welcomes-and-boost:`, err);
+  });
 });
 
 // Handle interactions
@@ -556,12 +579,44 @@ client.on('interactionCreate', async interaction => {
 
       interaction.editReply({ embeds: [embed] });
     });
+  } else if (commandName === 'bump') {
+    const embed = new EmbedBuilder()
+      .setTitle('🚀 Bump the Server!')
+      .setColor(0xFF6347)
+      .setDescription(`${interaction.user.username} has bumped The Hideout! 📈\n\nThanks for helping us grow!`);
+
+    const channel = interaction.guild.channels.cache.find(ch => ch.name === 'bump');
+    if (channel) {
+      channel.send({ embeds: [embed] }).catch(err => {
+        console.error('Error sending bump announcement:', err);
+      });
+    }
+
+    interaction.reply({ content: 'Thanks for bumping The Hideout! 🎉', ephemeral: true });
   }
 });
 
 // Monthly rollover notifier (1st of every month at midnight)
 cron.schedule('0 0 1 * *', () => {
   console.log('New monthly leaderboard cycle started:', getCurrentMonth());
+});
+
+// Bump reminder every 2 hours
+cron.schedule('0 */2 * * *', () => {
+  const guilds = client.guilds.cache;
+  guilds.forEach(guild => {
+    const channel = guild.channels.cache.find(ch => ch.name === 'bump');
+    if (channel) {
+      const embed = new EmbedBuilder()
+        .setTitle('🔔 Bump Reminder!')
+        .setColor(0xFF6347)
+        .setDescription('Don\'t forget to bump the server!\n\nUse `/bump` to help The Hideout grow! 📈');
+      
+      channel.send({ embeds: [embed] }).catch(err => {
+        console.error(`Error sending bump reminder to ${guild.name}:`, err);
+      });
+    }
+  });
 });
 
 // Ensure token exists
