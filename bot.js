@@ -21,6 +21,10 @@ const client = new Client({
   ],
 });
 
+// Bump cooldown tracker (2 hours = 7200000 ms)
+const bumpCooldowns = new Map();
+const BUMP_COOLDOWN = 2 * 60 * 60 * 1000; // 2 hours in milliseconds
+
 const db = new sqlite3.Database(dbPath);
 
 // Initialize database
@@ -580,6 +584,35 @@ client.on('interactionCreate', async interaction => {
       interaction.editReply({ embeds: [embed] });
     });
   } else if (commandName === 'bump') {
+    const userId = interaction.user.id;
+    const now = Date.now();
+    const lastBumpTime = bumpCooldowns.get(userId);
+
+    if (lastBumpTime) {
+      const timeSinceLastBump = now - lastBumpTime;
+      const remainingTime = BUMP_COOLDOWN - timeSinceLastBump;
+
+      if (remainingTime > 0) {
+        const hours = Math.floor(remainingTime / (60 * 60 * 1000));
+        const minutes = Math.floor((remainingTime % (60 * 60 * 1000)) / (60 * 1000));
+        const seconds = Math.floor((remainingTime % (60 * 1000)) / 1000);
+
+        const timeStr = hours > 0 
+          ? `${hours}h ${minutes}m ${seconds}s`
+          : minutes > 0 
+          ? `${minutes}m ${seconds}s`
+          : `${seconds}s`;
+
+        return interaction.reply({ 
+          content: `⏳ You can't bump again yet! Try again in **${timeStr}**`, 
+          ephemeral: true 
+        });
+      }
+    }
+
+    // Bump is allowed
+    bumpCooldowns.set(userId, now);
+
     const embed = new EmbedBuilder()
       .setTitle('🚀 Bump the Server!')
       .setColor(0xFF6347)
