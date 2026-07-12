@@ -4,11 +4,12 @@ A Discord bot for managing ranked Pokémon TCG matches and monthly leaderboards 
 
 ## Features
 
-- Player registration for leaderboards
-- Report match results with winner/loser
-- Monthly leaderboard tracking
+- Separate BO1 and BO3 monthly ladders
+- Match reporting with winner/loser and ladder selection
+- Monthly leaderboard tracking for each ladder
+- Activity-based leveling from chat messages and voice time
 - Automatic monthly reset on the 1st of each month
-- Admin command to manually reset leaderboard
+- Admin commands to manually reset or adjust ladders
 
 ## Setup
 
