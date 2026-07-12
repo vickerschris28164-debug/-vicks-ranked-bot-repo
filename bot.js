@@ -73,10 +73,10 @@ function awardXP(userId, userName, guildId, amount, callback) {
       }
 
       db.run(`UPDATE user_levels SET name = ?, xp = ?, level = ? WHERE guild_id = ? AND user_id = ?`, [userName, newXP, newLevel, guildId, userId], (err3) => {
-        const oldMilestone = Math.floor(currentXP / 10);
-        const newMilestone = Math.floor(newXP / 10);
+        const oldMilestone = Math.floor(currentXP / 50);
+        const newMilestone = Math.floor(newXP / 50);
         const crossedMilestone = newMilestone > oldMilestone;
-        callback(err3, { xp: newXP, level: newLevel, crossedMilestone, milestone: newMilestone * 10 });
+        callback(err3, { xp: newXP, level: newLevel, crossedMilestone, milestone: newMilestone * 50 });
       });
     });
   });
@@ -429,7 +429,7 @@ client.on('messageCreate', (message) => {
     if (err) return console.error('XP message award error:', err);
 
     if (result && result.crossedMilestone) {
-      message.channel.send(`🎯 ${message.author.username} reached ${result.milestone} XP!`).catch(err2 => {
+      message.channel.send(`🔥 **${message.author.username}** is on fire! 🔥\n🎉 Just smashed through **${result.milestone} XP**! Keep the momentum going! 🚀`).catch(err2 => {
         console.error('Error sending XP milestone announcement:', err2);
       });
     }
@@ -465,7 +465,7 @@ setInterval(() => {
         if (result && result.crossedMilestone) {
           const announceChannel = guild.channels.cache.find(ch => ch.name === 'level-up') || guild.systemChannel;
           if (announceChannel) {
-            announceChannel.send(`🎯 ${member.user.username} reached ${result.milestone} XP!`).catch(err2 => {
+            announceChannel.send(`🔥 **${member.user.username}** is on fire! 🔥\n🎉 Just smashed through **${result.milestone} XP**! Keep grinding in voice! 🚀`).catch(err2 => {
               console.error('Error sending XP milestone announcement:', err2);
             });
           }
