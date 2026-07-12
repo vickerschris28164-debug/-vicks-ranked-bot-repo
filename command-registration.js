@@ -53,16 +53,7 @@ async function registerSlashCommands(client, commands) {
       }
     }
   } else {
-    console.log('No guilds available for command registration; only global commands will be attempted.');
-  }
-
-  try {
-    await rest.put(Routes.applicationCommands(client.user.id), {
-      body: commandPayloads,
-    });
-    console.log('Global slash commands registered.');
-  } catch (err) {
-    console.error('Failed to register global slash commands:', err);
+    console.log('No guilds configured for command registration; skipping registration.');
   }
 }
 
