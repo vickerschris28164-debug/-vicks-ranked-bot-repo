@@ -200,7 +200,7 @@ db.serialize(() => {
 });
 
 // Register slash commands
-client.once('ready', async () => {
+client.once('clientReady', async () => {
   console.log(`Logged in as ${client.user.tag}!`);
 
   await client.user.setUsername('Hideout TCG Ranked Bot').catch(err => {
@@ -405,6 +405,7 @@ client.on('guildCreate', async (guild) => {
 
   try {
     const payloads = slashCommands.map((command) => command.toJSON());
+    await guild.commands.set([]);
     await guild.commands.set(payloads);
     console.log(`Registered commands for newly joined guild: ${guild.name}`);
   } catch (err) {

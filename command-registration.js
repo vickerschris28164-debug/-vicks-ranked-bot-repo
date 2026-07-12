@@ -17,7 +17,7 @@ function toCommandPayloads(commands) {
   });
 }
 
-function shouldSkipGlobalRegistration(configuredGuildIds, resolvedGuildIds) {
+function shouldUseGuildScopedRegistration(configuredGuildIds, resolvedGuildIds) {
   return configuredGuildIds.length > 0 || resolvedGuildIds.length > 0;
 }
 
@@ -66,6 +66,9 @@ async function registerSlashCommands(client, commands, options = {}) {
     for (const guildId of guildIds) {
       try {
         await rest.put(Routes.applicationGuildCommands(client.user.id, guildId), {
+          body: [],
+        });
+        await rest.put(Routes.applicationGuildCommands(client.user.id, guildId), {
           body: commandPayloads,
         });
         console.log(`Registered ${commandPayloads.length} slash commands for guild ${guildId}`);
@@ -77,7 +80,7 @@ async function registerSlashCommands(client, commands, options = {}) {
     console.log('No guilds available for command registration yet. Set GUILD_ID or GUILD_IDS in your environment to register commands immediately in a specific server.');
   }
 
-  if (!shouldSkipGlobalRegistration(configuredGuildIds, guildIds)) {
+  if (!shouldUseGuildScopedRegistration(configuredGuildIds, guildIds)) {
     try {
       await rest.put(Routes.applicationCommands(client.user.id), {
         body: commandPayloads,
@@ -87,8 +90,15 @@ async function registerSlashCommands(client, commands, options = {}) {
       console.error('Failed to register global slash commands:', err);
     }
   } else {
-    console.log('Skipping global command registration to avoid duplicate commands in guilds.');
+    try {
+      await rest.put(Routes.applicationCommands(client.user.id), {
+        body: [],
+      });
+      console.log('Cleared legacy global slash commands to avoid duplicate entries.');
+    } catch (err) {
+      console.error('Failed to clear legacy global slash commands:', err);
+    }
   }
 }
 
-module.exports = { parseGuildIds, toCommandPayloads, shouldSkipGlobalRegistration, registerSlashCommands };
+module.exports = { parseGuildIds, toCommandPayloads, shouldUseGuildScopedRegistration, registerSlashCommands };

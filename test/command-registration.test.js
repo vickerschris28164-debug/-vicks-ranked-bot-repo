@@ -1,6 +1,6 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { parseGuildIds, toCommandPayloads, shouldSkipGlobalRegistration } = require('../command-registration');
+const { parseGuildIds, toCommandPayloads, shouldUseGuildScopedRegistration } = require('../command-registration');
 
 test('parseGuildIds trims and filters empty guild IDs', () => {
   assert.deepEqual(parseGuildIds('123, 456, ,789'), ['123', '456', '789']);
@@ -13,8 +13,8 @@ test('toCommandPayloads converts builders to JSON payloads', () => {
   assert.deepEqual(toCommandPayloads(commands), [{ name: 'test' }, { name: 'raw' }]);
 });
 
-test('shouldSkipGlobalRegistration skips global registration when guilds are being targeted', () => {
-  assert.equal(shouldSkipGlobalRegistration(['123'], []), true);
-  assert.equal(shouldSkipGlobalRegistration([], ['456']), true);
-  assert.equal(shouldSkipGlobalRegistration([], []), false);
+test('shouldUseGuildScopedRegistration skips global registration when guilds are being targeted', () => {
+  assert.equal(shouldUseGuildScopedRegistration(['123'], []), true);
+  assert.equal(shouldUseGuildScopedRegistration([], ['456']), true);
+  assert.equal(shouldUseGuildScopedRegistration([], []), false);
 });
