@@ -450,7 +450,7 @@ setInterval(() => {
       if (now - lastAward < 60 * 1000) return;
 
       voiceXpCooldowns.set(key, now);
-      awardXP(member.id, member.user.username, guild.id, 8, (err) => {
+      awardXP(member.id, member.user.username, guild.id, 1, (err) => {
         if (err) console.error('XP voice award error:', err);
       });
     });
