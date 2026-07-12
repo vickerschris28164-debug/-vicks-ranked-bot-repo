@@ -394,7 +394,7 @@ client.once('ready', async () => {
   slashCommands = commands;
 
   try {
-    await registerSlashCommands(client, commands);
+    await registerSlashCommands(client, commands, { retries: 5, delayMs: 5000 });
   } catch (err) {
     console.error('Failed to register slash commands:', err);
   }
