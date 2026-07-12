@@ -422,8 +422,22 @@ client.on('messageCreate', (message) => {
   if (!message.guild || message.author.bot) return;
   if (!message.content || message.content.trim().length === 0) return;
 
-  awardXP(message.author.id, message.author.username, message.guild.id, 10, (err) => {
-    if (err) console.error('XP message award error:', err);
+  awardXP(message.author.id, message.author.username, message.guild.id, 10, (err, result) => {
+    if (err) return console.error('XP message award error:', err);
+
+    if (result && result.leveledUp) {
+      const lvlUpChannel = message.guild.channels.cache.find(ch => ch.name === 'lvl-up-xp');
+      if (lvlUpChannel) {
+        const embed = new EmbedBuilder()
+          .setTitle('🎉 Level Up!')
+          .setColor(0xFFD700)
+          .setDescription(`🎉 ${message.author.username} leveled up to **Level ${result.level}**!`);
+
+        lvlUpChannel.send({ embeds: [embed] }).catch(err2 => {
+          console.error('Could not send level up message to lvl-up-xp:', err2);
+        });
+      }
+    }
   });
 });
 
@@ -450,8 +464,22 @@ setInterval(() => {
       if (now - lastAward < 60 * 1000) return;
 
       voiceXpCooldowns.set(key, now);
-      awardXP(member.id, member.user.username, guild.id, 1, (err) => {
-        if (err) console.error('XP voice award error:', err);
+      awardXP(member.id, member.user.username, guild.id, 1, (err, result) => {
+        if (err) return console.error('XP voice award error:', err);
+
+        if (result && result.leveledUp) {
+          const lvlUpChannel = guild.channels.cache.find(ch => ch.name === 'lvl-up-xp');
+          if (lvlUpChannel) {
+            const embed = new EmbedBuilder()
+              .setTitle('🎉 Level Up!')
+              .setColor(0xFFD700)
+              .setDescription(`🎉 ${member.user.username} leveled up to **Level ${result.level}**!`);
+
+            lvlUpChannel.send({ embeds: [embed] }).catch(err2 => {
+              console.error('Could not send level up message to lvl-up-xp:', err2);
+            });
+          }
+        }
       });
     });
   });
