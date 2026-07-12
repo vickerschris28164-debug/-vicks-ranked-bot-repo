@@ -429,9 +429,12 @@ client.on('messageCreate', (message) => {
     if (err) return console.error('XP message award error:', err);
 
     if (result && result.crossedMilestone) {
-      message.channel.send(`🎯 ${message.author.username} reached ${result.milestone} XP!`).catch(err2 => {
-        console.error('Error sending XP milestone announcement:', err2);
-      });
+      const lvlUpChannel = message.guild.channels.cache.find(ch => ch.name === 'lvl-up-xp');
+      if (lvlUpChannel) {
+        lvlUpChannel.send(`🎯 ${message.author.username} reached ${result.milestone} XP!`).catch(err2 => {
+          console.error('Error sending XP milestone announcement:', err2);
+        });
+      }
     }
   });
 });
@@ -463,7 +466,7 @@ setInterval(() => {
         if (err) return console.error('XP voice award error:', err);
 
         if (result && result.crossedMilestone) {
-          const announceChannel = guild.channels.cache.find(ch => ch.name === 'level-up') || guild.systemChannel;
+          const announceChannel = guild.channels.cache.find(ch => ch.name === 'lvl-up-xp');
           if (announceChannel) {
             announceChannel.send(`🎯 ${member.user.username} reached ${result.milestone} XP!`).catch(err2 => {
               console.error('Error sending XP milestone announcement:', err2);
