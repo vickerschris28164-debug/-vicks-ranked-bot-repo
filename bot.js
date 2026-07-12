@@ -3,6 +3,7 @@ const sqlite3 = require('sqlite3').verbose();
 const cron = require('node-cron');
 const path = require('path');
 const fs = require('fs');
+const { registerSlashCommands } = require('./command-registration');
 require('dotenv').config();
 
 // Ensure database directory exists
@@ -16,11 +17,11 @@ const client = new Client({
   intents: [
     GatewayIntentBits.Guilds,
     GatewayIntentBits.GuildMessages,
-    GatewayIntentBits.MessageContent,
-    GatewayIntentBits.GuildMembers,
     GatewayIntentBits.GuildVoiceStates,
   ],
 });
+
+let slashCommands = [];
 
 // Bump cooldown tracker (2 hours = 7200000 ms)
 const bumpCooldowns = new Map();
@@ -390,8 +391,24 @@ client.once('ready', async () => {
       .setDescription('Bump the server on Disboard'),
   ];
 
-  await client.application.commands.set(commands);
-  console.log('Slash commands registered.');
+  slashCommands = commands;
+
+  try {
+    await registerSlashCommands(client, commands);
+  } catch (err) {
+    console.error('Failed to register slash commands:', err);
+  }
+});
+
+client.on('guildCreate', async (guild) => {
+  if (!slashCommands.length) return;
+
+  try {
+    await guild.commands.set(slashCommands);
+    console.log(`Registered commands for newly joined guild: ${guild.name}`);
+  } catch (err) {
+    console.error(`Failed to register slash commands for newly joined guild ${guild.name}:`, err);
+  }
 });
 
 client.on('guildMemberAdd', (member) => {
@@ -912,9 +929,11 @@ cron.schedule('0 */2 * * *', () => {
   });
 });
 
-if (!process.env.DISCORD_TOKEN) {
-  console.error('DISCORD_TOKEN not found in .env file!');
+const token = process.env.DISCORD_TOKEN || process.env.BOT_TOKEN || process.env.TOKEN;
+
+if (!token) {
+  console.error('No Discord bot token found. Set DISCORD_TOKEN, BOT_TOKEN, or TOKEN in your environment or .env file.');
   process.exit(1);
 }
 
-client.login(process.env.DISCORD_TOKEN);
+client.login(token);
