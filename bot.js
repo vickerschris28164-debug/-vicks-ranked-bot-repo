@@ -404,7 +404,8 @@ client.on('guildCreate', async (guild) => {
   if (!slashCommands.length) return;
 
   try {
-    await guild.commands.set(slashCommands);
+    const payloads = slashCommands.map((command) => command.toJSON());
+    await guild.commands.set(payloads);
     console.log(`Registered commands for newly joined guild: ${guild.name}`);
   } catch (err) {
     console.error(`Failed to register slash commands for newly joined guild ${guild.name}:`, err);

@@ -8,9 +8,30 @@ function parseGuildIds(value) {
     .filter(Boolean);
 }
 
-async function registerSlashCommands(client, commands) {
+function toCommandPayloads(commands) {
+  return commands.map((command) => {
+    if (command && typeof command.toJSON === 'function') {
+      return command.toJSON();
+    }
+    return command;
+  });
+}
+
+async function getGuildIdsForRegistration(client) {
   const configuredGuildIds = parseGuildIds(process.env.GUILD_IDS || process.env.GUILD_ID);
-  const commandPayloads = commands.map((command) => command.toJSON());
+  if (configuredGuildIds.length > 0) {
+    return configuredGuildIds;
+  }
+
+  if (typeof client?.guilds?.fetch === 'function') {
+    await client.guilds.fetch();
+  }
+
+  return Array.from(client?.guilds?.cache?.values?.() || []).map((guild) => guild.id);
+}
+
+async function registerSlashCommands(client, commands) {
+  const commandPayloads = toCommandPayloads(commands);
   const token = process.env.DISCORD_TOKEN || process.env.BOT_TOKEN || process.env.TOKEN;
 
   if (!token) {
@@ -18,9 +39,10 @@ async function registerSlashCommands(client, commands) {
   }
 
   const rest = new REST({ version: '10' }).setToken(token);
+  const guildIds = await getGuildIdsForRegistration(client);
 
-  if (configuredGuildIds.length > 0) {
-    for (const guildId of configuredGuildIds) {
+  if (guildIds.length > 0) {
+    for (const guildId of guildIds) {
       try {
         await rest.put(Routes.applicationGuildCommands(client.user.id, guildId), {
           body: commandPayloads,
@@ -31,19 +53,7 @@ async function registerSlashCommands(client, commands) {
       }
     }
   } else {
-    const guilds = Array.from(client.guilds.cache.values());
-    console.log(`Found ${guilds.length} guild(s) for command registration.`);
-
-    for (const guild of guilds) {
-      try {
-        await rest.put(Routes.applicationGuildCommands(client.user.id, guild.id), {
-          body: commandPayloads,
-        });
-        console.log(`Registered ${commandPayloads.length} slash commands for guild ${guild.name}`);
-      } catch (err) {
-        console.error(`Failed to register slash commands for guild ${guild.name}:`, err);
-      }
-    }
+    console.log('No guilds available for command registration; only global commands will be attempted.');
   }
 
   try {
@@ -56,4 +66,4 @@ async function registerSlashCommands(client, commands) {
   }
 }
 
-module.exports = { parseGuildIds, registerSlashCommands };
+module.exports = { parseGuildIds, toCommandPayloads, registerSlashCommands };
