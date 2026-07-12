@@ -389,6 +389,28 @@ client.once('clientReady', async () => {
     new SlashCommandBuilder()
       .setName('bump')
       .setDescription('Bump the server on Disboard'),
+    new SlashCommandBuilder()
+      .setName('bo1')
+      .setDescription('Show the BO1 leaderboard or register for BO1')
+      .addStringOption(option =>
+        option.setName('action')
+          .setDescription('Choose what to do for BO1')
+          .setRequired(false)
+          .addChoices(
+            { name: 'Leaderboard', value: 'leaderboard' },
+            { name: 'Register', value: 'register' }
+          )),
+    new SlashCommandBuilder()
+      .setName('bo3')
+      .setDescription('Show the BO3 leaderboard or register for BO3')
+      .addStringOption(option =>
+        option.setName('action')
+          .setDescription('Choose what to do for BO3')
+          .setRequired(false)
+          .addChoices(
+            { name: 'Leaderboard', value: 'leaderboard' },
+            { name: 'Register', value: 'register' }
+          )),
   ];
 
   slashCommands = commands;
@@ -667,6 +689,8 @@ client.on('interactionCreate', async interaction => {
         { name: '/history month:YYYY-MM [ladder]', value: 'View leaderboard for a specific month.', inline: false },
         { name: '/player_history [player] [ladder]', value: 'View a player\'s stats across all months.', inline: false },
         { name: '/match_history [limit] [month] [ladder]', value: 'View recent matches with optional filters.', inline: false },
+        { name: '/bo1 [action]', value: 'Quick BO1 command for leaderboard or registration.', inline: false },
+        { name: '/bo3 [action]', value: 'Quick BO3 command for leaderboard or registration.', inline: false },
         { name: '/reset_monthly [ladder]', value: 'Reset the monthly leaderboard (Admin only).', inline: false },
         { name: '/undo_match player:@user [ladder]', value: 'Undo the last match for a player (Admin only).', inline: false },
         { name: '/set_score player:@user points:number [ladder]', value: 'Set a player score manually (Admin only).', inline: false }
@@ -864,6 +888,102 @@ client.on('interactionCreate', async interaction => {
         .setDescription(description);
 
       interaction.editReply({ embeds: [embed] });
+    });
+  } else if (commandName === 'bo1') {
+    const action = interaction.options.getString('action') || 'leaderboard';
+    if (action === 'register') {
+      const userId = interaction.user.id;
+      const userName = interaction.user.username;
+      const month = getCurrentMonth();
+      const ladder = 'bo1';
+
+      ensurePlayerForMonth(userId, userName, month, ladder, (err, inserted) => {
+        if (err) {
+          console.error('BO1 register error:', err);
+          return interaction.reply('Error registering for BO1. Please try again.');
+        }
+
+        if (inserted) {
+          interaction.reply('You have been registered for the Best of 1 ladder for this month.');
+        } else {
+          interaction.reply('You are already registered for the Best of 1 ladder this month.');
+        }
+      });
+      return;
+    }
+
+    const month = getCurrentMonth();
+    const ladder = 'bo1';
+
+    db.all(`SELECT name, points FROM players WHERE month = ? AND ladder_type = ? ORDER BY points DESC LIMIT 10`, [month, ladder], (err, rows) => {
+      if (err) {
+        console.error(err);
+        return interaction.reply('Error fetching BO1 leaderboard.');
+      }
+
+      const embed = new EmbedBuilder()
+        .setTitle('Best of 1 Monthly Leaderboard - ' + month)
+        .setColor(0x0099FF);
+
+      if (rows.length === 0) {
+        embed.setDescription('No players registered yet for BO1.');
+      } else {
+        let description = '';
+        rows.forEach((row, index) => {
+          description += `${index + 1}. ${row.name}: ${row.points} points\n`;
+        });
+        embed.setDescription(description);
+      }
+
+      interaction.reply({ embeds: [embed] });
+    });
+  } else if (commandName === 'bo3') {
+    const action = interaction.options.getString('action') || 'leaderboard';
+    if (action === 'register') {
+      const userId = interaction.user.id;
+      const userName = interaction.user.username;
+      const month = getCurrentMonth();
+      const ladder = 'bo3';
+
+      ensurePlayerForMonth(userId, userName, month, ladder, (err, inserted) => {
+        if (err) {
+          console.error('BO3 register error:', err);
+          return interaction.reply('Error registering for BO3. Please try again.');
+        }
+
+        if (inserted) {
+          interaction.reply('You have been registered for the Best of 3 ladder for this month.');
+        } else {
+          interaction.reply('You are already registered for the Best of 3 ladder this month.');
+        }
+      });
+      return;
+    }
+
+    const month = getCurrentMonth();
+    const ladder = 'bo3';
+
+    db.all(`SELECT name, points FROM players WHERE month = ? AND ladder_type = ? ORDER BY points DESC LIMIT 10`, [month, ladder], (err, rows) => {
+      if (err) {
+        console.error(err);
+        return interaction.reply('Error fetching BO3 leaderboard.');
+      }
+
+      const embed = new EmbedBuilder()
+        .setTitle('Best of 3 Monthly Leaderboard - ' + month)
+        .setColor(0x0099FF);
+
+      if (rows.length === 0) {
+        embed.setDescription('No players registered yet for BO3.');
+      } else {
+        let description = '';
+        rows.forEach((row, index) => {
+          description += `${index + 1}. ${row.name}: ${row.points} points\n`;
+        });
+        embed.setDescription(description);
+      }
+
+      interaction.reply({ embeds: [embed] });
     });
   } else if (commandName === 'bump') {
     const userId = interaction.user.id;
