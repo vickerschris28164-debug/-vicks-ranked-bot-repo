@@ -73,7 +73,10 @@ function awardXP(userId, userName, guildId, amount, callback) {
       }
 
       db.run(`UPDATE user_levels SET name = ?, xp = ?, level = ? WHERE guild_id = ? AND user_id = ?`, [userName, newXP, newLevel, guildId, userId], (err3) => {
-        callback(err3, { xp: newXP, level: newLevel, leveledUp: newLevel > currentLevel });
+        const oldMilestone = Math.floor(currentXP / 10);
+        const newMilestone = Math.floor(newXP / 10);
+        const crossedMilestone = newMilestone > oldMilestone;
+        callback(err3, { xp: newXP, level: newLevel, crossedMilestone, milestone: newMilestone * 10 });
       });
     });
   });
@@ -422,8 +425,14 @@ client.on('messageCreate', (message) => {
   if (!message.guild || message.author.bot) return;
   if (!message.content || message.content.trim().length === 0) return;
 
-  awardXP(message.author.id, message.author.username, message.guild.id, 10, (err) => {
-    if (err) console.error('XP message award error:', err);
+  awardXP(message.author.id, message.author.username, message.guild.id, 10, (err, result) => {
+    if (err) return console.error('XP message award error:', err);
+
+    if (result && result.crossedMilestone) {
+      message.channel.send(`🎯 ${message.author.username} reached ${result.milestone} XP!`).catch(err2 => {
+        console.error('Error sending XP milestone announcement:', err2);
+      });
+    }
   });
 });
 
@@ -450,8 +459,17 @@ setInterval(() => {
       if (now - lastAward < 60 * 1000) return;
 
       voiceXpCooldowns.set(key, now);
-      awardXP(member.id, member.user.username, guild.id, 1, (err) => {
-        if (err) console.error('XP voice award error:', err);
+      awardXP(member.id, member.user.username, guild.id, 1, (err, result) => {
+        if (err) return console.error('XP voice award error:', err);
+
+        if (result && result.crossedMilestone) {
+          const announceChannel = guild.channels.cache.find(ch => ch.name === 'level-up') || guild.systemChannel;
+          if (announceChannel) {
+            announceChannel.send(`🎯 ${member.user.username} reached ${result.milestone} XP!`).catch(err2 => {
+              console.error('Error sending XP milestone announcement:', err2);
+            });
+          }
+        }
       });
     });
   });
