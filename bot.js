@@ -200,6 +200,68 @@ db.serialize(() => {
     level INTEGER DEFAULT 1,
     PRIMARY KEY (guild_id, user_id)
   )`);
+
+  db.run(`CREATE TABLE IF NOT EXISTS cosmetics_shop (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT,
+    cost INTEGER,
+    type TEXT,
+    emoji TEXT
+  )`);
+
+  // Seed default cosmetics if empty
+  db.get('SELECT COUNT(*) as count FROM cosmetics_shop', (err, row) => {
+    if (row && row.count === 0) {
+      const defaults = [
+        // Common (500-800 XP)
+        ['⭐ Gold Border', 500, 'border', '⭐'],
+        ['🔵 Blue Aura', 550, 'aura', '🔵'],
+        ['🟢 Green Aura', 550, 'aura', '🟢'],
+        ['💜 Purple Aura', 550, 'aura', '💜'],
+        ['✨ Sparkle Effect', 600, 'effect', '✨'],
+        ['🌟 Star Glow', 650, 'effect', '🌟'],
+        ['🎆 Fireworks', 700, 'effect', '🎆'],
+
+        // Uncommon (800-1200 XP)
+        ['👑 Crown Title', 1000, 'title', '👑'],
+        ['🔥 Flame Aura', 850, 'aura', '🔥'],
+        ['❄️ Frost Aura', 900, 'aura', '❄️'],
+        ['⚡ Lightning Aura', 950, 'aura', '⚡'],
+        ['🍂 Autumn Leaves', 1000, 'effect', '🍂'],
+        ['❤️ Love Aura', 1050, 'aura', '❤️'],
+        ['🌈 Rainbow Frame', 1100, 'frame', '🌈'],
+
+        // Rare (1300-2000 XP)
+        ['💎 Diamond Frame', 1500, 'frame', '💎'],
+        ['🌟 Star Power', 1600, 'aura', '🌟'],
+        ['👾 Retro Glitch', 1700, 'effect', '👾'],
+        ['🎯 Bullseye', 1800, 'title', '🎯'],
+        ['🏆 Champion Crown', 1900, 'frame', '🏆'],
+        ['💰 Gold Rush', 2000, 'effect', '💰'],
+
+        // Epic (2100-3500 XP)
+        ['🌙 Lunar Eclipse', 2200, 'aura', '🌙'],
+        ['☄️ Meteor Strike', 2400, 'effect', '☄️'],
+        ['🦇 Mystic Bat', 2500, 'title', '🦇'],
+        ['👑 Emperor\'s Throne', 2700, 'frame', '👑'],
+        ['🌀 Void Walker', 2800, 'aura', '🌀'],
+        ['💀 Reaper\'s Mark', 3000, 'title', '💀'],
+        ['🌊 Tidal Wave', 3200, 'effect', '🌊'],
+
+        // Legendary (3500+ XP)
+        ['🔮 Arcane Orb', 3500, 'aura', '🔮'],
+        ['⚔️ Legendary Sword', 3800, 'title', '⚔️'],
+        ['👑 Divine Crown', 4000, 'frame', '👑'],
+        ['🌟 Celestial Being', 4200, 'aura', '🌟'],
+        ['💫 Supernova', 4500, 'effect', '💫'],
+        ['🎭 God Tier', 5000, 'title', '🎭'],
+        ['👸 Supreme Royalty', 5500, 'frame', '👸']
+      ];
+      defaults.forEach(([name, cost, type, emoji]) => {
+        db.run('INSERT INTO cosmetics_shop (name, cost, type, emoji) VALUES (?, ?, ?, ?)', [name, cost, type, emoji]);
+      });
+    }
+  });
 });
 
 // Register slash commands
