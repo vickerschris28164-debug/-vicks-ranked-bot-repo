@@ -200,76 +200,27 @@ db.serialize(() => {
     level INTEGER DEFAULT 1,
     PRIMARY KEY (guild_id, user_id)
   )`);
-
-  db.run(`CREATE TABLE IF NOT EXISTS cosmetics_shop (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    name TEXT,
-    cost INTEGER,
-    type TEXT,
-    emoji TEXT
+  db.run(`CREATE TABLE IF NOT EXISTS player_coins (
+    guild_id TEXT,
+    user_id TEXT,
+    coins INTEGER DEFAULT 0,
+    last_daily TEXT,
+    PRIMARY KEY (guild_id, user_id)
   )`);
 
-  db.run(`CREATE TABLE IF NOT EXISTS player_coins (guild_id TEXT, user_id TEXT, coins INTEGER DEFAULT 0, last_daily DATETIME, PRIMARY KEY (guild_id, user_id))`);
-
-  db.run(`CREATE TABLE IF NOT EXISTS gambling_history (id INTEGER PRIMARY KEY AUTOINCREMENT, guild_id TEXT, user_id TEXT, game_type TEXT, amount_bet INTEGER, amount_won INTEGER, result TEXT, timestamp DATETIME DEFAULT CURRENT_TIMESTAMP)`);
-
-  // Seed default cosmetics if empty
-  db.get('SELECT COUNT(*) as count FROM cosmetics_shop', (err, row) => {
-    if (row && row.count === 0) {
-      const defaults = [
-        // Common (500-800 XP)
-        ['⭐ Gold Border', 500, 'border', '⭐'],
-        ['🔵 Blue Aura', 550, 'aura', '🔵'],
-        ['🟢 Green Aura', 550, 'aura', '🟢'],
-        ['💜 Purple Aura', 550, 'aura', '💜'],
-        ['✨ Sparkle Effect', 600, 'effect', '✨'],
-        ['🌟 Star Glow', 650, 'effect', '🌟'],
-        ['🎆 Fireworks', 700, 'effect', '🎆'],
-
-        // Uncommon (800-1200 XP)
-        ['👑 Crown Title', 1000, 'title', '👑'],
-        ['🔥 Flame Aura', 850, 'aura', '🔥'],
-        ['❄️ Frost Aura', 900, 'aura', '❄️'],
-        ['⚡ Lightning Aura', 950, 'aura', '⚡'],
-        ['🍂 Autumn Leaves', 1000, 'effect', '🍂'],
-        ['❤️ Love Aura', 1050, 'aura', '❤️'],
-        ['🌈 Rainbow Frame', 1100, 'frame', '🌈'],
-
-        // Rare (1300-2000 XP)
-        ['💎 Diamond Frame', 1500, 'frame', '💎'],
-        ['🌟 Star Power', 1600, 'aura', '🌟'],
-        ['👾 Retro Glitch', 1700, 'effect', '👾'],
-        ['🎯 Bullseye', 1800, 'title', '🎯'],
-        ['🏆 Champion Crown', 1900, 'frame', '🏆'],
-        ['💰 Gold Rush', 2000, 'effect', '💰'],
-
-        // Epic (2100-3500 XP)
-        ['🌙 Lunar Eclipse', 2200, 'aura', '🌙'],
-        ['☄️ Meteor Strike', 2400, 'effect', '☄️'],
-        ['🦇 Mystic Bat', 2500, 'title', '🦇'],
-        ['👑 Emperor\'s Throne', 2700, 'frame', '👑'],
-        ['🌀 Void Walker', 2800, 'aura', '🌀'],
-        ['💀 Reaper\'s Mark', 3000, 'title', '💀'],
-        ['🌊 Tidal Wave', 3200, 'effect', '🌊'],
-
-        // Legendary (3500+ XP)
-        ['🔮 Arcane Orb', 3500, 'aura', '🔮'],
-        ['⚔️ Legendary Sword', 3800, 'title', '⚔️'],
-        ['👑 Divine Crown', 4000, 'frame', '👑'],
-        ['🌟 Celestial Being', 4200, 'aura', '🌟'],
-        ['💫 Supernova', 4500, 'effect', '💫'],
-        ['🎭 God Tier', 5000, 'title', '🎭'],
-        ['👸 Supreme Royalty', 5500, 'frame', '👸']
-      ];
-      defaults.forEach(([name, cost, type, emoji]) => {
-        db.run('INSERT INTO cosmetics_shop (name, cost, type, emoji) VALUES (?, ?, ?, ?)', [name, cost, type, emoji]);
-      });
-    }
-  });
+  db.run(`CREATE TABLE IF NOT EXISTS gambling_history (
+    guild_id TEXT,
+    user_id TEXT,
+    game_type TEXT,
+    amount_bet INTEGER,
+    amount_won INTEGER,
+    result TEXT,
+    timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
+  )`);
 });
 
 // Register slash commands
-client.once('ready', async () => {
+client.once('clientReady', async () => {
   console.log(`Logged in as ${client.user.tag}!`);
 
   await client.user.setUsername('Hideout TCG Ranked Bot').catch(err => {
@@ -456,97 +407,90 @@ client.once('ready', async () => {
             { name: 'Best of 3', value: 'bo3' }
           )),
     new SlashCommandBuilder()
-      .setName('bump')
-      .setDescription('Bump the server on Disboard'),
-    new SlashCommandBuilder()
-      .setName('shop')
-      .setDescription('View or buy cosmetic items')
-      .addSubcommand(sub =>
-        sub.setName('view')
-          .setDescription('View available cosmetics'))
-      .addSubcommand(sub =>
-        sub.setName('buy')
-          .setDescription('Buy a cosmetic item')
-          .addStringOption(option =>
-            option.setName('item')
-              .setDescription('Cosmetic name to buy')
-              .setRequired(true))),
-    new SlashCommandBuilder()
-      .setName('cosmetic')
-      .setDescription('Manage your cosmetics')
-      .addSubcommand(sub =>
-        sub.setName('equip')
-          .setDescription('Equip a cosmetic')
-          .addStringOption(option =>
-            option.setName('item')
-              .setDescription('Cosmetic name to equip')
-              .setRequired(true)))
-      .addSubcommand(sub =>
-        sub.setName('unequip')
-          .setDescription('Unequip your cosmetic'))
-      .addSubcommand(sub =>
-        sub.setName('inventory')
-          .setDescription('View your cosmetics')),
-    new SlashCommandBuilder()
-      .setName('balance')
-      .setDescription('Check your XP balance')
-      .addUserOption(option =>
-        option.setName('player')
-          .setDescription('The player to check balance for')
-          .setRequired(false)),
-    new SlashCommandBuilder()
       .setName('daily')
       .setDescription('Claim your daily coin reward'),
     new SlashCommandBuilder()
       .setName('coins')
-      .setDescription('Check your coin balance')
+      .setDescription('Check coin balance for a player')
       .addUserOption(option =>
         option.setName('player')
-          .setDescription('The player to check coins for')
+          .setDescription('Player to check')
           .setRequired(false)),
     new SlashCommandBuilder()
       .setName('coinflip')
       .setDescription('Bet coins on a coin flip')
       .addIntegerOption(option =>
         option.setName('amount')
-          .setDescription('Coins to bet (1-1000)')
-          .setRequired(true)
-          .setMinValue(1)
-          .setMaxValue(1000))
+          .setDescription('Bet amount')
+          .setRequired(true))
       .addStringOption(option =>
         option.setName('choice')
-          .setDescription('Heads or Tails')
+          .setDescription('Heads or tails')
           .setRequired(true)
           .addChoices(
-            { name: 'Heads', value: 'heads' },
-            { name: 'Tails', value: 'tails' }
+            { name: 'heads', value: 'heads' },
+            { name: 'tails', value: 'tails' }
           )),
     new SlashCommandBuilder()
       .setName('slots')
-      .setDescription('Spin the slot machine')
+      .setDescription('Play the slot machine')
       .addIntegerOption(option =>
         option.setName('amount')
-          .setDescription('Coins to bet (1-1000)')
-          .setRequired(true)
-          .setMinValue(1)
-          .setMaxValue(1000)),
+          .setDescription('Bet amount')
+          .setRequired(true)),
     new SlashCommandBuilder()
       .setName('blackjack')
-      .setDescription('Play blackjack against the bot')
+      .setDescription('Play a quick blackjack hand')
       .addIntegerOption(option =>
         option.setName('amount')
-          .setDescription('Coins to bet (1-1000)')
-          .setRequired(true)
-          .setMinValue(1)
-          .setMaxValue(1000)),
+          .setDescription('Bet amount')
+          .setRequired(true)),
+    new SlashCommandBuilder()
+      .setName('bump')
+      .setDescription('Bump the server on Disboard'),
+    new SlashCommandBuilder()
+      .setName('bo1')
+      .setDescription('Show the BO1 leaderboard or register for BO1')
+      .addStringOption(option =>
+        option.setName('action')
+          .setDescription('Choose what to do for BO1')
+          .setRequired(false)
+          .addChoices(
+            { name: 'Leaderboard', value: 'leaderboard' },
+            { name: 'Register', value: 'register' }
+          )),
+    new SlashCommandBuilder()
+      .setName('bo3')
+      .setDescription('Show the BO3 leaderboard or register for BO3')
+      .addStringOption(option =>
+        option.setName('action')
+          .setDescription('Choose what to do for BO3')
+          .setRequired(false)
+          .addChoices(
+            { name: 'Leaderboard', value: 'leaderboard' },
+            { name: 'Register', value: 'register' }
+          )),
   ];
 
   slashCommands = commands;
 
   try {
-    await registerSlashCommands(client, commands);
+    await registerSlashCommands(client, commands, { retries: 5, delayMs: 5000 });
   } catch (err) {
     console.error('Failed to register slash commands:', err);
+  }
+});
+
+client.on('guildCreate', async (guild) => {
+  if (!slashCommands.length) return;
+
+  try {
+    const payloads = slashCommands.map((command) => command.toJSON());
+    await guild.commands.set([]);
+    await guild.commands.set(payloads);
+    console.log(`Registered commands for newly joined guild: ${guild.name}`);
+  } catch (err) {
+    console.error(`Failed to register slash commands for newly joined guild ${guild.name}:`, err);
   }
 });
 
@@ -818,10 +762,17 @@ client.on('interactionCreate', async interaction => {
         { name: '/leaderboard [ladder]', value: 'View the current monthly leaderboard.', inline: false },
         { name: '/stats [player] [ladder]', value: 'Show monthly stats for yourself or another player.', inline: false },
         { name: '/level [player]', value: 'Show XP and level progress for activity-based leveling.', inline: false },
+        { name: '/daily', value: 'Claim your daily coin reward.', inline: false },
+        { name: '/coins [player]', value: 'Check a player\'s coin balance.', inline: false },
+        { name: '/coinflip amount:integer choice:heads|tails', value: 'Bet your coins on a coin flip.', inline: false },
+        { name: '/slots amount:integer', value: 'Play the slot machine for coins.', inline: false },
+        { name: '/blackjack amount:integer', value: 'Play a quick blackjack hand (single bet).', inline: false },
         { name: '/history_list [ladder]', value: 'View all months with leaderboard data.', inline: false },
         { name: '/history month:YYYY-MM [ladder]', value: 'View leaderboard for a specific month.', inline: false },
         { name: '/player_history [player] [ladder]', value: 'View a player\'s stats across all months.', inline: false },
         { name: '/match_history [limit] [month] [ladder]', value: 'View recent matches with optional filters.', inline: false },
+        { name: '/bo1 [action]', value: 'Quick BO1 command for leaderboard or registration.', inline: false },
+        { name: '/bo3 [action]', value: 'Quick BO3 command for leaderboard or registration.', inline: false },
         { name: '/reset_monthly [ladder]', value: 'Reset the monthly leaderboard (Admin only).', inline: false },
         { name: '/undo_match player:@user [ladder]', value: 'Undo the last match for a player (Admin only).', inline: false },
         { name: '/set_score player:@user points:number [ladder]', value: 'Set a player score manually (Admin only).', inline: false }
@@ -1020,6 +971,210 @@ client.on('interactionCreate', async interaction => {
 
       interaction.editReply({ embeds: [embed] });
     });
+  } else if (commandName === 'bo1') {
+    const action = interaction.options.getString('action') || 'leaderboard';
+    if (action === 'register') {
+      const userId = interaction.user.id;
+      const userName = interaction.user.username;
+      const month = getCurrentMonth();
+      const ladder = 'bo1';
+
+      ensurePlayerForMonth(userId, userName, month, ladder, (err, inserted) => {
+        if (err) {
+          console.error('BO1 register error:', err);
+          return interaction.reply('Error registering for BO1. Please try again.');
+        }
+
+        if (inserted) {
+          interaction.reply('You have been registered for the Best of 1 ladder for this month.');
+        } else {
+          interaction.reply('You are already registered for the Best of 1 ladder this month.');
+        }
+      });
+      return;
+    }
+
+    const month = getCurrentMonth();
+    const ladder = 'bo1';
+
+    db.all(`SELECT name, points FROM players WHERE month = ? AND ladder_type = ? ORDER BY points DESC LIMIT 10`, [month, ladder], (err, rows) => {
+      if (err) {
+        console.error(err);
+        return interaction.reply('Error fetching BO1 leaderboard.');
+      }
+
+      const embed = new EmbedBuilder()
+        .setTitle('Best of 1 Monthly Leaderboard - ' + month)
+        .setColor(0x0099FF);
+
+      if (rows.length === 0) {
+        embed.setDescription('No players registered yet for BO1.');
+      } else {
+        let description = '';
+        rows.forEach((row, index) => {
+          description += `${index + 1}. ${row.name}: ${row.points} points\n`;
+        });
+        embed.setDescription(description);
+      }
+
+      interaction.reply({ embeds: [embed] });
+    });
+  } else if (commandName === 'bo3') {
+    const action = interaction.options.getString('action') || 'leaderboard';
+    if (action === 'register') {
+      const userId = interaction.user.id;
+      const userName = interaction.user.username;
+      const month = getCurrentMonth();
+      const ladder = 'bo3';
+
+      ensurePlayerForMonth(userId, userName, month, ladder, (err, inserted) => {
+        if (err) {
+          console.error('BO3 register error:', err);
+          return interaction.reply('Error registering for BO3. Please try again.');
+        }
+
+        if (inserted) {
+          interaction.reply('You have been registered for the Best of 3 ladder for this month.');
+        } else {
+          interaction.reply('You are already registered for the Best of 3 ladder this month.');
+        }
+      });
+      return;
+    }
+
+    const month = getCurrentMonth();
+    const ladder = 'bo3';
+
+    db.all(`SELECT name, points FROM players WHERE month = ? AND ladder_type = ? ORDER BY points DESC LIMIT 10`, [month, ladder], (err, rows) => {
+      if (err) {
+        console.error(err);
+        return interaction.reply('Error fetching BO3 leaderboard.');
+      }
+
+      const embed = new EmbedBuilder()
+        .setTitle('Best of 3 Monthly Leaderboard - ' + month)
+        .setColor(0x0099FF);
+
+      if (rows.length === 0) {
+        embed.setDescription('No players registered yet for BO3.');
+      } else {
+        let description = '';
+        rows.forEach((row, index) => {
+          description += `${index + 1}. ${row.name}: ${row.points} points\n`;
+        });
+        embed.setDescription(description);
+      }
+
+      interaction.reply({ embeds: [embed] });
+    });
+  } else if (commandName === 'daily') {
+    const userId = interaction.user.id;
+    const guildId = interaction.guild.id;
+    const now = new Date();
+    const today = now.toISOString().split('T')[0];
+    db.get('SELECT coins, last_daily FROM player_coins WHERE guild_id = ? AND user_id = ?', [guildId, userId], (err, row) => {
+      if (err) return interaction.reply('Error checking daily reward');
+      const lastDaily = row?.last_daily ? new Date(row.last_daily).toISOString().split('T')[0] : null;
+      if (lastDaily === today) return interaction.reply('❌ You already claimed your daily reward today! Come back tomorrow.');
+      const reward = 100;
+      const newCoins = (row?.coins || 0) + reward;
+      db.run('INSERT OR REPLACE INTO player_coins (guild_id, user_id, coins, last_daily) VALUES (?, ?, ?, ?)', [guildId, userId, newCoins, now.toISOString()], (err) => {
+        if (err) return interaction.reply('Error claiming daily reward');
+        const embed = new EmbedBuilder().setTitle('💰 Daily Reward Claimed!').setColor('#FFD700').addFields({ name: 'Coins Earned', value: `+100`, inline: true }, { name: 'Total Coins', value: `${newCoins}`, inline: true });
+        interaction.reply({ embeds: [embed] });
+      });
+    });
+
+  } else if (commandName === 'coins') {
+    const player = interaction.options.getUser('player') || interaction.user;
+    const guildId = interaction.guild.id;
+    db.get('SELECT coins FROM player_coins WHERE guild_id = ? AND user_id = ?', [guildId, player.id], (err, row) => {
+      if (err) return interaction.reply('Error fetching coins');
+      const coins = row?.coins || 0;
+      const embed = new EmbedBuilder().setTitle(`💵 ${player.username}'s Coin Balance`).setColor('#FFD700').setDescription(`**${coins}** coins`);
+      interaction.reply({ embeds: [embed] });
+    });
+
+  } else if (commandName === 'coinflip') {
+    const userId = interaction.user.id;
+    const guildId = interaction.guild.id;
+    const bet = interaction.options.getInteger('amount');
+    const choice = interaction.options.getString('choice');
+    db.get('SELECT coins FROM player_coins WHERE guild_id = ? AND user_id = ?', [guildId, userId], (err, row) => {
+      if (err || !row || row.coins < bet) return interaction.reply(`❌ You don't have enough coins! You have ${row?.coins || 0}, bet is ${bet}`);
+      const flip = Math.random() > 0.48 ? 'heads' : 'tails';
+      const won = flip === choice;
+      const payout = won ? bet * 2 : 0;
+      const newCoins = row.coins - bet + payout;
+      db.run('UPDATE player_coins SET coins = ? WHERE guild_id = ? AND user_id = ?', [newCoins, guildId, userId], (err) => {
+        if (err) return interaction.reply('Error processing bet');
+        db.run('INSERT INTO gambling_history (guild_id, user_id, game_type, amount_bet, amount_won, result) VALUES (?, ?, ?, ?, ?, ?)', [guildId, userId, 'coinflip', bet, payout, won ? 'win' : 'loss']);
+        const resultEmoji = won ? '✅' : '❌';
+        const embed = new EmbedBuilder().setTitle('🪙 Coin Flip').setColor(won ? '#00FF99' : '#FF6B6B').addFields({ name: 'You chose', value: choice, inline: true }, { name: 'Result', value: flip, inline: true }, { name: 'Bet', value: `${bet} coins`, inline: true }, { name: 'Payout', value: `${payout} coins`, inline: true }, { name: 'Balance', value: `${newCoins} coins`, inline: true }).setDescription(`${resultEmoji} ${won ? 'You won!' : 'You lost!'}`);
+        interaction.reply({ embeds: [embed] });
+      });
+    });
+
+  } else if (commandName === 'slots') {
+    const userId = interaction.user.id;
+    const guildId = interaction.guild.id;
+    const bet = interaction.options.getInteger('amount');
+    db.get('SELECT coins FROM player_coins WHERE guild_id = ? AND user_id = ?', [guildId, userId], (err, row) => {
+      if (err || !row || row.coins < bet) return interaction.reply(`❌ You don't have enough coins! You have ${row?.coins || 0}, bet is ${bet}`);
+      const symbols = ['🍎', '🍊', '🍋', '🍌', '7️⃣'];
+      const reel1 = symbols[Math.floor(Math.random() * symbols.length)];
+      const reel2 = symbols[Math.floor(Math.random() * symbols.length)];
+      const reel3 = symbols[Math.floor(Math.random() * symbols.length)];
+      let multiplier = 0;
+      if (reel1 === reel2 && reel2 === reel3) multiplier = 5;
+      else if (reel1 === reel2 || reel2 === reel3) multiplier = 1;
+      const payout = Math.floor(bet * multiplier);
+      const newCoins = row.coins - bet + payout;
+      db.run('UPDATE player_coins SET coins = ? WHERE guild_id = ? AND user_id = ?', [newCoins, guildId, userId], (err) => {
+        if (err) return interaction.reply('Error processing bet');
+        db.run('INSERT INTO gambling_history (guild_id, user_id, game_type, amount_bet, amount_won, result) VALUES (?, ?, ?, ?, ?, ?)', [guildId, userId, 'slots', bet, payout, multiplier > 0 ? 'win' : 'loss']);
+        const resultEmoji = multiplier > 0 ? '✅' : '❌';
+        const resultText = multiplier === 5 ? '🎉 JACKPOT!' : multiplier === 1 ? 'Two match!' : 'No match';
+        const embed = new EmbedBuilder().setTitle('🎰 Slot Machine').setColor(multiplier > 0 ? '#00FF99' : '#FF6B6B').addFields({ name: 'Spin', value: `${reel1} ${reel2} ${reel3}`, inline: false }, { name: 'Bet', value: `${bet} coins`, inline: true }, { name: 'Payout', value: `${payout} coins`, inline: true }, { name: 'Balance', value: `${newCoins} coins`, inline: true }).setDescription(`${resultEmoji} ${resultText}`);
+        interaction.reply({ embeds: [embed] });
+      });
+    });
+
+  } else if (commandName === 'blackjack') {
+    await interaction.deferReply();
+    const userId = interaction.user.id;
+    const guildId = interaction.guild.id;
+    const bet = interaction.options.getInteger('amount');
+    db.get('SELECT coins FROM player_coins WHERE guild_id = ? AND user_id = ?', [guildId, userId], (err, row) => {
+      if (err || !row || row.coins < bet) return interaction.editReply(`❌ You don't have enough coins! You have ${row?.coins || 0}, bet is ${bet}`);
+      const cardValue = (card) => (card >= 2 && card <= 9) ? card : (card === 1) ? 11 : 10;
+      const getScore = (hand) => { let score = hand.reduce((sum, card) => sum + cardValue(card), 0); const aces = hand.filter(card => card === 1).length; while (score > 21 && aces > 0) { score -= 10; } return score; };
+      const getCardDisplay = (card) => { const displays = ['', 'A', '2', '3', '4', '5', '6', '7', '8', '9', '10', 'J', 'Q', 'K']; return displays[card] || ''; };
+      const playerHand = [Math.ceil(Math.random() * 13), Math.ceil(Math.random() * 13)];
+      const dealerHand = [Math.ceil(Math.random() * 13), Math.ceil(Math.random() * 13)];
+      const playerScore = getScore(playerHand);
+      const dealerScore = getScore(dealerHand);
+      let finalDealerHand = [...dealerHand];
+      while (getScore(finalDealerHand) < 17) finalDealerHand.push(Math.ceil(Math.random() * 13));
+      const finalDealerScore = getScore(finalDealerHand);
+      let result = 'loss', payout = 0;
+      if (playerScore > 21) result = 'loss';
+      else if (finalDealerScore > 21) { result = 'win'; payout = bet * 2; }
+      else if (playerScore > finalDealerScore) { result = 'win'; payout = bet * 2; }
+      else if (playerScore === finalDealerScore) { result = 'push'; payout = bet; }
+      const newCoins = row.coins - bet + payout;
+      db.run('UPDATE player_coins SET coins = ? WHERE guild_id = ? AND user_id = ?', [newCoins, guildId, userId], (err) => {
+        if (err) return interaction.editReply('Error processing bet');
+        db.run('INSERT INTO gambling_history (guild_id, user_id, game_type, amount_bet, amount_won, result) VALUES (?, ?, ?, ?, ?, ?)', [guildId, userId, 'blackjack', bet, payout, result]);
+        const playerCardStr = playerHand.map(c => getCardDisplay(c)).join(' ');
+        const dealerCardStr = finalDealerHand.map(c => getCardDisplay(c)).join(' ');
+        const resultEmoji = result === 'win' ? '✅' : result === 'push' ? '🤝' : '❌';
+        const resultText = result === 'win' ? 'You win!' : result === 'push' ? 'Push!' : 'Dealer wins';
+        const embed = new EmbedBuilder().setTitle('🃏 Blackjack').setColor(result === 'win' ? '#00FF99' : result === 'push' ? '#FFD700' : '#FF6B6B').addFields({ name: 'Your Hand', value: `${playerCardStr} (${playerScore})`, inline: true }, { name: 'Dealer Hand', value: `${dealerCardStr} (${finalDealerScore})`, inline: true }, { name: 'Bet', value: `${bet} coins`, inline: true }, { name: 'Payout', value: `${payout} coins`, inline: true }, { name: 'Balance', value: `${newCoins} coins`, inline: true }).setDescription(`${resultEmoji} ${resultText}`);
+        interaction.editReply({ embeds: [embed] });
+      });
+    });
+
   } else if (commandName === 'bump') {
     const userId = interaction.user.id;
     const now = Date.now();

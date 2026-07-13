@@ -17,33 +17,57 @@ function toCommandPayloads(commands) {
   });
 }
 
-async function getGuildIdsForRegistration(client) {
-  const configuredGuildIds = parseGuildIds(process.env.GUILD_IDS || process.env.GUILD_ID);
+function shouldUseGuildScopedRegistration(configuredGuildIds, resolvedGuildIds) {
+  return configuredGuildIds.length > 0 || resolvedGuildIds.length > 0;
+}
+
+async function getGuildIdsForRegistration(client, configuredGuildIds, retries = 5, delayMs = 5000) {
   if (configuredGuildIds.length > 0) {
     return configuredGuildIds;
   }
 
-  if (typeof client?.guilds?.fetch === 'function') {
-    await client.guilds.fetch();
+  for (let attempt = 1; attempt <= retries; attempt += 1) {
+    if (typeof client?.guilds?.fetch === 'function') {
+      try {
+        await client.guilds.fetch();
+      } catch (err) {
+        console.warn(`Guild fetch attempt ${attempt} failed:`, err.message || err);
+      }
+    }
+
+    const guildIds = Array.from(client?.guilds?.cache?.values?.() || []).map((guild) => guild.id);
+    if (guildIds.length > 0) {
+      return guildIds;
+    }
+
+    if (attempt < retries) {
+      await new Promise((resolve) => setTimeout(resolve, delayMs));
+    }
   }
 
-  return Array.from(client?.guilds?.cache?.values?.() || []).map((guild) => guild.id);
+  return [];
 }
 
-async function registerSlashCommands(client, commands) {
+async function registerSlashCommands(client, commands, options = {}) {
   const commandPayloads = toCommandPayloads(commands);
   const token = process.env.DISCORD_TOKEN || process.env.BOT_TOKEN || process.env.TOKEN;
+  const retries = options.retries ?? 5;
+  const delayMs = options.delayMs ?? 5000;
 
   if (!token) {
     throw new Error('No Discord token found.');
   }
 
   const rest = new REST({ version: '10' }).setToken(token);
-  const guildIds = await getGuildIdsForRegistration(client);
+  const configuredGuildIds = parseGuildIds(process.env.GUILD_IDS || process.env.GUILD_ID);
+  const guildIds = await getGuildIdsForRegistration(client, configuredGuildIds, retries, delayMs);
 
   if (guildIds.length > 0) {
     for (const guildId of guildIds) {
       try {
+        await rest.put(Routes.applicationGuildCommands(client.user.id, guildId), {
+          body: [],
+        });
         await rest.put(Routes.applicationGuildCommands(client.user.id, guildId), {
           body: commandPayloads,
         });
@@ -53,8 +77,28 @@ async function registerSlashCommands(client, commands) {
       }
     }
   } else {
-    console.log('No guilds configured for command registration; skipping registration.');
+    console.log('No guilds available for command registration yet. Set GUILD_ID or GUILD_IDS in your environment to register commands immediately in a specific server.');
+  }
+
+  if (!shouldUseGuildScopedRegistration(configuredGuildIds, guildIds)) {
+    try {
+      await rest.put(Routes.applicationCommands(client.user.id), {
+        body: commandPayloads,
+      });
+      console.log('Global slash commands registered.');
+    } catch (err) {
+      console.error('Failed to register global slash commands:', err);
+    }
+  } else {
+    try {
+      await rest.put(Routes.applicationCommands(client.user.id), {
+        body: [],
+      });
+      console.log('Cleared legacy global slash commands to avoid duplicate entries.');
+    } catch (err) {
+      console.error('Failed to clear legacy global slash commands:', err);
+    }
   }
 }
 
-module.exports = { parseGuildIds, toCommandPayloads, registerSlashCommands };
+module.exports = { parseGuildIds, toCommandPayloads, shouldUseGuildScopedRegistration, registerSlashCommands };
