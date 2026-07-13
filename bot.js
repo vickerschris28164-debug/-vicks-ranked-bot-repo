@@ -1386,15 +1386,4 @@ if (!token) {
   process.exit(1);
 }
 
-// Temporary: Clear global commands (run once, then remove this block)
-client.once('ready', async () => {
-  try {
-    const rest = new REST({ version: '10' }).setToken(token);
-    await rest.put(Routes.applicationCommands(client.user.id), { body: [] });
-    console.log('Global commands cleared.');
-  } catch (err) {
-    console.error('Error clearing global commands:', err);
-  }
-});
-
 client.login(token);
