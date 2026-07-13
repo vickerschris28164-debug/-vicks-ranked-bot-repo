@@ -490,6 +490,51 @@ client.once('ready', async () => {
         option.setName('player')
           .setDescription('The player to check balance for')
           .setRequired(false)),
+    new SlashCommandBuilder()
+      .setName('daily')
+      .setDescription('Claim your daily coin reward'),
+    new SlashCommandBuilder()
+      .setName('coins')
+      .setDescription('Check your coin balance')
+      .addUserOption(option =>
+        option.setName('player')
+          .setDescription('The player to check coins for')
+          .setRequired(false)),
+    new SlashCommandBuilder()
+      .setName('coinflip')
+      .setDescription('Bet coins on a coin flip')
+      .addIntegerOption(option =>
+        option.setName('amount')
+          .setDescription('Coins to bet (1-1000)')
+          .setRequired(true)
+          .setMinValue(1)
+          .setMaxValue(1000))
+      .addStringOption(option =>
+        option.setName('choice')
+          .setDescription('Heads or Tails')
+          .setRequired(true)
+          .addChoices(
+            { name: 'Heads', value: 'heads' },
+            { name: 'Tails', value: 'tails' }
+          )),
+    new SlashCommandBuilder()
+      .setName('slots')
+      .setDescription('Spin the slot machine')
+      .addIntegerOption(option =>
+        option.setName('amount')
+          .setDescription('Coins to bet (1-1000)')
+          .setRequired(true)
+          .setMinValue(1)
+          .setMaxValue(1000)),
+    new SlashCommandBuilder()
+      .setName('blackjack')
+      .setDescription('Play blackjack against the bot')
+      .addIntegerOption(option =>
+        option.setName('amount')
+          .setDescription('Coins to bet (1-1000)')
+          .setRequired(true)
+          .setMinValue(1)
+          .setMaxValue(1000)),
   ];
 
   slashCommands = commands;
