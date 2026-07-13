@@ -209,6 +209,10 @@ db.serialize(() => {
     emoji TEXT
   )`);
 
+  db.run(`CREATE TABLE IF NOT EXISTS player_coins (guild_id TEXT, user_id TEXT, coins INTEGER DEFAULT 0, last_daily DATETIME, PRIMARY KEY (guild_id, user_id))`);
+
+  db.run(`CREATE TABLE IF NOT EXISTS gambling_history (id INTEGER PRIMARY KEY AUTOINCREMENT, guild_id TEXT, user_id TEXT, game_type TEXT, amount_bet INTEGER, amount_won INTEGER, result TEXT, timestamp DATETIME DEFAULT CURRENT_TIMESTAMP)`);
+
   // Seed default cosmetics if empty
   db.get('SELECT COUNT(*) as count FROM cosmetics_shop', (err, row) => {
     if (row && row.count === 0) {
