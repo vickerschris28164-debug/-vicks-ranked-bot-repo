@@ -1,4 +1,4 @@
-const { Client, GatewayIntentBits, SlashCommandBuilder, EmbedBuilder } = require('discord.js');
+const { Client, GatewayIntentBits, SlashCommandBuilder, EmbedBuilder, REST, Routes } = require('discord.js');
 const sqlite3 = require('sqlite3').verbose();
 const cron = require('node-cron');
 const path = require('path');
@@ -73,7 +73,10 @@ function awardXP(userId, userName, guildId, amount, callback) {
       }
 
       db.run(`UPDATE user_levels SET name = ?, xp = ?, level = ? WHERE guild_id = ? AND user_id = ?`, [userName, newXP, newLevel, guildId, userId], (err3) => {
-        callback(err3, { xp: newXP, level: newLevel, leveledUp: newLevel > currentLevel });
+        const oldMilestone = Math.floor(currentXP / 50);
+        const newMilestone = Math.floor(newXP / 50);
+        const crossedMilestone = newMilestone > oldMilestone;
+        callback(err3, { xp: newXP, level: newLevel, crossedMilestone, milestone: newMilestone * 50 });
       });
     });
   });
@@ -513,8 +516,17 @@ client.on('messageCreate', (message) => {
   if (!message.guild || message.author.bot) return;
   if (!message.content || message.content.trim().length === 0) return;
 
-  awardXP(message.author.id, message.author.username, message.guild.id, 10, (err) => {
-    if (err) console.error('XP message award error:', err);
+  awardXP(message.author.id, message.author.username, message.guild.id, 10, (err, result) => {
+    if (err) return console.error('XP message award error:', err);
+
+    if (result && result.crossedMilestone) {
+      const lvlUpChannel = message.guild.channels.cache.get('1525991425995575457');
+      if (lvlUpChannel) {
+        lvlUpChannel.send(`🔥 **${message.author.username}** is on fire! 🔥\n🎉 Just smashed through **${result.milestone} XP**! Keep the momentum going! 🚀`).catch(err2 => {
+          console.error('Error sending XP milestone announcement:', err2);
+        });
+      }
+    }
   });
 });
 
@@ -541,8 +553,17 @@ setInterval(() => {
       if (now - lastAward < 60 * 1000) return;
 
       voiceXpCooldowns.set(key, now);
-      awardXP(member.id, member.user.username, guild.id, 8, (err) => {
-        if (err) console.error('XP voice award error:', err);
+      awardXP(member.id, member.user.username, guild.id, 1, (err, result) => {
+        if (err) return console.error('XP voice award error:', err);
+
+        if (result && result.crossedMilestone) {
+          const announceChannel = guild.channels.cache.get('1525991425995575457');
+          if (announceChannel) {
+            announceChannel.send(`🔥 **${member.user.username}** is on fire! 🔥\n🎉 Just smashed through **${result.milestone} XP**! Keep grinding in voice! 🚀`).catch(err2 => {
+              console.error('Error sending XP milestone announcement:', err2);
+            });
+          }
+        }
       });
     });
   });
@@ -1196,6 +1217,144 @@ client.on('interactionCreate', async interaction => {
     }
 
     interaction.reply({ content: 'Thanks for bumping The Hideout! 🎉', ephemeral: true });
+  } else if (commandName === 'shop') {
+    const subcommand = interaction.options.getSubcommand();
+
+    if (subcommand === 'view') {
+      db.all('SELECT id, name, cost, emoji FROM cosmetics_shop ORDER BY cost ASC', (err, items) => {
+        if (err) return interaction.reply('Error loading shop');
+
+        const itemList = items.map(item => `${item.emoji} **${item.name}** - ${item.cost} XP`).join('\n');
+        const embed = new EmbedBuilder()
+          .setTitle('🛍️ Cosmetics Shop')
+          .setDescription(itemList)
+          .setColor('#FFD700');
+
+        interaction.reply({ embeds: [embed] });
+      });
+    } else if (subcommand === 'buy') {
+      const itemName = interaction.options.getString('item');
+      const userId = interaction.user.id;
+      const guildId = interaction.guild.id;
+
+      db.get('SELECT * FROM cosmetics_shop WHERE name = ?', [itemName], (err, item) => {
+        if (!item) return interaction.reply('Item not found');
+
+        db.get('SELECT xp FROM user_levels WHERE guild_id = ? AND user_id = ?', [guildId, userId], (err, player) => {
+          if (!player || player.xp < item.cost) {
+            return interaction.reply(`❌ Not enough XP! Need ${item.cost} XP, you have ${player?.xp || 0}`);
+          }
+
+          db.run('UPDATE user_levels SET xp = xp - ? WHERE guild_id = ? AND user_id = ?', [item.cost, guildId, userId], (err) => {
+            if (err) return interaction.reply('Error processing purchase');
+
+            db.run('INSERT INTO player_cosmetics (guild_id, user_id, cosmetic_id) VALUES (?, ?, ?)', [guildId, userId, item.id], (err) => {
+              if (err) return interaction.reply('Already own this item');
+              interaction.reply(`✅ Purchased ${item.emoji} **${item.name}** for ${item.cost} XP!`);
+            });
+          });
+        });
+      });
+    }
+  } else if (commandName === 'cosmetic') {
+    const subcommand = interaction.options.getSubcommand();
+    const userId = interaction.user.id;
+    const guildId = interaction.guild.id;
+
+    if (subcommand === 'equip') {
+      const itemName = interaction.options.getString('item');
+
+      db.get(`
+        SELECT pc.id FROM player_cosmetics pc
+        JOIN cosmetics_shop cs ON pc.cosmetic_id = cs.id
+        WHERE pc.guild_id = ? AND pc.user_id = ? AND cs.name = ?
+      `, [guildId, userId, itemName], (err, cosmetic) => {
+        if (!cosmetic) return interaction.reply('You don\'t own this cosmetic');
+
+        db.run('UPDATE player_cosmetics SET is_equipped = 0 WHERE guild_id = ? AND user_id = ?', [guildId, userId], (err) => {
+          db.run('UPDATE player_cosmetics SET is_equipped = 1 WHERE id = ?', [cosmetic.id], (err) => {
+            interaction.reply(`✅ Equipped ${itemName}!`);
+          });
+        });
+      });
+    } else if (subcommand === 'unequip') {
+      db.run('UPDATE player_cosmetics SET is_equipped = 0 WHERE guild_id = ? AND user_id = ?', [guildId, userId], (err) => {
+        interaction.reply('✅ Unequipped cosmetic');
+      });
+    } else if (subcommand === 'inventory') {
+      db.all(`
+        SELECT cs.name, cs.emoji, pc.is_equipped FROM player_cosmetics pc
+        JOIN cosmetics_shop cs ON pc.cosmetic_id = cs.id
+        WHERE pc.guild_id = ? AND pc.user_id = ?
+      `, [guildId, userId], (err, cosmetics) => {
+        if (!cosmetics || cosmetics.length === 0) {
+          return interaction.reply('You don\'t own any cosmetics yet. Use `/shop view` to buy some!');
+        }
+
+        const list = cosmetics.map(c => {
+          return `${c.is_equipped ? '✅' : '  '} ${c.emoji} ${c.name}`;
+        }).join('\n');
+
+        const embed = new EmbedBuilder()
+          .setTitle('🎨 Your Cosmetics')
+          .setDescription(list)
+          .setColor('#9370DB');
+
+        interaction.reply({ embeds: [embed] });
+      });
+    }
+  } else if (commandName === 'balance') {
+    const player = interaction.options.getUser('player') || interaction.user;
+    const guildId = interaction.guild.id;
+
+    db.get('SELECT xp, level FROM user_levels WHERE guild_id = ? AND user_id = ?', [guildId, player.id], (err, row) => {
+      if (err) {
+        console.error('Balance query error:', err);
+        return interaction.reply('Error fetching balance');
+      }
+
+      if (!row) {
+        return interaction.reply(`${player.username} has not earned any XP yet.`);
+      }
+
+      const embed = new EmbedBuilder()
+        .setTitle(`💰 ${player.username}'s Balance`)
+        .setColor('#00FF99')
+        .addFields(
+          { name: 'XP Balance', value: `${row.xp} XP`, inline: true },
+          { name: 'Level', value: `${row.level}`, inline: true }
+        );
+
+      interaction.reply({ embeds: [embed] });
+    });
+  } else if (commandName === 'daily') {
+    const userId = interaction.user.id;
+    const guildId = interaction.guild.id;
+    const now = new Date();
+    const today = now.toISOString().split('T')[0];
+    db.get('SELECT coins, last_daily FROM player_coins WHERE guild_id = ? AND user_id = ?', [guildId, userId], (err, row) => {
+      if (err) return interaction.reply('Error checking daily reward');
+      const lastDaily = row?.last_daily ? new Date(row.last_daily).toISOString().split('T')[0] : null;
+      if (lastDaily === today) {
+        return interaction.reply('❌ You already claimed your daily reward today! Come back tomorrow.');
+      }
+      const reward = 100;
+      const newCoins = (row?.coins || 0) + reward;
+      db.run('INSERT OR REPLACE INTO player_coins (guild_id, user_id, coins, last_daily) VALUES (?, ?, ?, ?)', [guildId, userId, newCoins, now.toISOString()], (err) => {
+        if (err) return interaction.reply('Error claiming daily reward');
+        const embed = new EmbedBuilder().setTitle('💰 Daily Reward Claimed!').setColor('#FFD700').addFields({ name: 'Coins Earned', value: `+${reward}`, inline: true }, { name: 'Total Coins', value: `${newCoins}`, inline: true });
+        interaction.reply({ embeds: [embed] });
+      });
+    });
+  } else if (commandName === 'coins') {
+    const player = interaction.options.getUser('player') || interaction.user;
+    const guildId = interaction.guild.id;
+    db.get('SELECT coins FROM player_coins WHERE guild_id = ? AND user_id = ?', [guildId, player.id], (err, row) => {
+      if (err) return interaction.reply('Error fetching coins');
+      const coins = row?.coins || 0;
+      const embed = new EmbedBuilder().setTitle(`💵 ${player.username}'s Coin Balance`).setColor('#FFD700').setDescription(`**${coins}** coins`);
+      interaction.reply({ embeds: [embed] });
+    });
   }
 });
 
@@ -1226,5 +1385,16 @@ if (!token) {
   console.error('No Discord bot token found. Set DISCORD_TOKEN, BOT_TOKEN, or TOKEN in your environment or .env file.');
   process.exit(1);
 }
+
+// Temporary: Clear global commands (run once, then remove this block)
+client.once('ready', async () => {
+  try {
+    const rest = new REST({ version: '10' }).setToken(token);
+    await rest.put(Routes.applicationCommands(client.user.id), { body: [] });
+    console.log('Global commands cleared.');
+  } catch (err) {
+    console.error('Error clearing global commands:', err);
+  }
+});
 
 client.login(token);
