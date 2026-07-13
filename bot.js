@@ -200,6 +200,40 @@ db.serialize(() => {
     level INTEGER DEFAULT 1,
     PRIMARY KEY (guild_id, user_id)
   )`);
+
+  db.run(`CREATE TABLE IF NOT EXISTS cosmetics_shop (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT UNIQUE,
+    cost INTEGER,
+    type TEXT,
+    emoji TEXT
+  )`);
+
+  db.run(`CREATE TABLE IF NOT EXISTS player_cosmetics (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    guild_id TEXT,
+    user_id TEXT,
+    cosmetic_id INTEGER,
+    is_equipped INTEGER DEFAULT 0,
+    FOREIGN KEY(cosmetic_id) REFERENCES cosmetics_shop(id),
+    PRIMARY KEY (guild_id, user_id, cosmetic_id)
+  )`);
+
+  // Seed default cosmetics if empty
+  db.get('SELECT COUNT(*) as count FROM cosmetics_shop', (err, row) => {
+    if (row && row.count === 0) {
+      const defaults = [
+        ['👑 Crown Title', 1000, 'title', '👑'],
+        ['🔥 Flame Aura', 750, 'aura', '🔥'],
+        ['⭐ Gold Border', 500, 'border', '⭐'],
+        ['💎 Diamond Frame', 1500, 'frame', '💎'],
+        ['🌟 Star Power', 600, 'aura', '🌟']
+      ];
+      defaults.forEach(([name, cost, type, emoji]) => {
+        db.run('INSERT INTO cosmetics_shop (name, cost, type, emoji) VALUES (?, ?, ?, ?)', [name, cost, type, emoji]);
+      });
+    }
+  });
 });
 
 // Register slash commands
@@ -392,6 +426,35 @@ client.once('ready', async () => {
     new SlashCommandBuilder()
       .setName('bump')
       .setDescription('Bump the server on Disboard'),
+    new SlashCommandBuilder()
+      .setName('shop')
+      .setDescription('View or buy cosmetic items')
+      .addSubcommand(sub =>
+        sub.setName('view')
+          .setDescription('View available cosmetics'))
+      .addSubcommand(sub =>
+        sub.setName('buy')
+          .setDescription('Buy a cosmetic item')
+          .addStringOption(option =>
+            option.setName('item')
+              .setDescription('Cosmetic name to buy')
+              .setRequired(true))),
+    new SlashCommandBuilder()
+      .setName('cosmetic')
+      .setDescription('Manage your cosmetics')
+      .addSubcommand(sub =>
+        sub.setName('equip')
+          .setDescription('Equip a cosmetic')
+          .addStringOption(option =>
+            option.setName('item')
+              .setDescription('Cosmetic name to equip')
+              .setRequired(true)))
+      .addSubcommand(sub =>
+        sub.setName('unequip')
+          .setDescription('Unequip your cosmetic'))
+      .addSubcommand(sub =>
+        sub.setName('inventory')
+          .setDescription('View your cosmetics')),
   ];
 
   slashCommands = commands;
@@ -915,6 +978,92 @@ client.on('interactionCreate', async interaction => {
     }
 
     interaction.reply({ content: 'Thanks for bumping The Hideout! 🎉', ephemeral: true });
+  } else if (commandName === 'shop') {
+    const subcommand = interaction.options.getSubcommand();
+
+    if (subcommand === 'view') {
+      db.all('SELECT id, name, cost, emoji FROM cosmetics_shop ORDER BY cost ASC', (err, items) => {
+        if (err) return interaction.reply('Error loading shop');
+
+        const itemList = items.map(item => `${item.emoji} **${item.name}** - ${item.cost} XP`).join('\n');
+        const embed = new EmbedBuilder()
+          .setTitle('🛍️ Cosmetics Shop')
+          .setDescription(itemList)
+          .setColor('#FFD700');
+
+        interaction.reply({ embeds: [embed] });
+      });
+    } else if (subcommand === 'buy') {
+      const itemName = interaction.options.getString('item');
+      const userId = interaction.user.id;
+      const guildId = interaction.guild.id;
+
+      db.get('SELECT * FROM cosmetics_shop WHERE name = ?', [itemName], (err, item) => {
+        if (!item) return interaction.reply('Item not found');
+
+        db.get('SELECT xp FROM user_levels WHERE guild_id = ? AND user_id = ?', [guildId, userId], (err, player) => {
+          if (!player || player.xp < item.cost) {
+            return interaction.reply(`❌ Not enough XP! Need ${item.cost} XP, you have ${player?.xp || 0}`);
+          }
+
+          db.run('UPDATE user_levels SET xp = xp - ? WHERE guild_id = ? AND user_id = ?', [item.cost, guildId, userId], (err) => {
+            if (err) return interaction.reply('Error processing purchase');
+
+            db.run('INSERT INTO player_cosmetics (guild_id, user_id, cosmetic_id) VALUES (?, ?, ?)', [guildId, userId, item.id], (err) => {
+              if (err) return interaction.reply('Already own this item');
+              interaction.reply(`✅ Purchased ${item.emoji} **${item.name}** for ${item.cost} XP!`);
+            });
+          });
+        });
+      });
+    }
+  } else if (commandName === 'cosmetic') {
+    const subcommand = interaction.options.getSubcommand();
+    const userId = interaction.user.id;
+    const guildId = interaction.guild.id;
+
+    if (subcommand === 'equip') {
+      const itemName = interaction.options.getString('item');
+
+      db.get(`
+        SELECT pc.id FROM player_cosmetics pc
+        JOIN cosmetics_shop cs ON pc.cosmetic_id = cs.id
+        WHERE pc.guild_id = ? AND pc.user_id = ? AND cs.name = ?
+      `, [guildId, userId, itemName], (err, cosmetic) => {
+        if (!cosmetic) return interaction.reply('You don\'t own this cosmetic');
+
+        db.run('UPDATE player_cosmetics SET is_equipped = 0 WHERE guild_id = ? AND user_id = ?', [guildId, userId], (err) => {
+          db.run('UPDATE player_cosmetics SET is_equipped = 1 WHERE id = ?', [cosmetic.id], (err) => {
+            interaction.reply(`✅ Equipped ${itemName}!`);
+          });
+        });
+      });
+    } else if (subcommand === 'unequip') {
+      db.run('UPDATE player_cosmetics SET is_equipped = 0 WHERE guild_id = ? AND user_id = ?', [guildId, userId], (err) => {
+        interaction.reply('✅ Unequipped cosmetic');
+      });
+    } else if (subcommand === 'inventory') {
+      db.all(`
+        SELECT cs.name, cs.emoji, pc.is_equipped FROM player_cosmetics pc
+        JOIN cosmetics_shop cs ON pc.cosmetic_id = cs.id
+        WHERE pc.guild_id = ? AND pc.user_id = ?
+      `, [guildId, userId], (err, cosmetics) => {
+        if (!cosmetics || cosmetics.length === 0) {
+          return interaction.reply('You don\'t own any cosmetics yet. Use `/shop view` to buy some!');
+        }
+
+        const list = cosmetics.map(c => {
+          return `${c.is_equipped ? '✅' : '  '} ${c.emoji} ${c.name}`;
+        }).join('\n');
+
+        const embed = new EmbedBuilder()
+          .setTitle('🎨 Your Cosmetics')
+          .setDescription(list)
+          .setColor('#9370DB');
+
+        interaction.reply({ embeds: [embed] });
+      });
+    }
   }
 });
 
