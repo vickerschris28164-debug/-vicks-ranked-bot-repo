@@ -1123,6 +1123,49 @@ client.on('interactionCreate', async interaction => {
 
       interaction.reply({ embeds: [embed] });
     });
+  } else if (commandName === 'coinflip') {
+    const userId = interaction.user.id;
+    const guildId = interaction.guild.id;
+    const bet = interaction.options.getInteger('amount');
+    const choice = interaction.options.getString('choice');
+    db.get('SELECT coins FROM player_coins WHERE guild_id = ? AND user_id = ?', [guildId, userId], (err, row) => {
+      if (err || !row || row.coins < bet) return interaction.reply(`❌ You don't have enough coins! You have ${row?.coins || 0}, bet is ${bet}`);
+      const flip = Math.random() > 0.48 ? 'heads' : 'tails';
+      const won = flip === choice;
+      const payout = won ? bet * 2 : 0;
+      const newCoins = row.coins - bet + payout;
+      db.run('UPDATE player_coins SET coins = ? WHERE guild_id = ? AND user_id = ?', [newCoins, guildId, userId], (err) => {
+        if (err) return interaction.reply('Error processing bet');
+        db.run('INSERT INTO gambling_history (guild_id, user_id, game_type, amount_bet, amount_won, result) VALUES (?, ?, ?, ?, ?, ?)', [guildId, userId, 'coinflip', bet, payout, won ? 'win' : 'loss']);
+        const resultEmoji = won ? '✅' : '❌';
+        const embed = new EmbedBuilder().setTitle('🪙 Coin Flip').setColor(won ? '#00FF99' : '#FF6B6B').addFields({ name: 'You chose', value: choice, inline: true }, { name: 'Result', value: flip, inline: true }, { name: 'Bet', value: `${bet} coins`, inline: true }, { name: 'Payout', value: `${payout} coins`, inline: true }, { name: 'Balance', value: `${newCoins} coins`, inline: true }).setDescription(`${resultEmoji} ${won ? 'You won!' : 'You lost!'}`);
+        interaction.reply({ embeds: [embed] });
+      });
+    });
+  } else if (commandName === 'slots') {
+    const userId = interaction.user.id;
+    const guildId = interaction.guild.id;
+    const bet = interaction.options.getInteger('amount');
+    db.get('SELECT coins FROM player_coins WHERE guild_id = ? AND user_id = ?', [guildId, userId], (err, row) => {
+      if (err || !row || row.coins < bet) return interaction.reply(`❌ You don't have enough coins! You have ${row?.coins || 0}, bet is ${bet}`);
+      const symbols = ['🍎', '🍊', '🍋', '🍌', '7️⃣'];
+      const reel1 = symbols[Math.floor(Math.random() * symbols.length)];
+      const reel2 = symbols[Math.floor(Math.random() * symbols.length)];
+      const reel3 = symbols[Math.floor(Math.random() * symbols.length)];
+      let multiplier = 0;
+      if (reel1 === reel2 && reel2 === reel3) multiplier = 5;
+      else if (reel1 === reel2 || reel2 === reel3) multiplier = 1;
+      const payout = Math.floor(bet * multiplier);
+      const newCoins = row.coins - bet + payout;
+      db.run('UPDATE player_coins SET coins = ? WHERE guild_id = ? AND user_id = ?', [newCoins, guildId, userId], (err) => {
+        if (err) return interaction.reply('Error processing bet');
+        db.run('INSERT INTO gambling_history (guild_id, user_id, game_type, amount_bet, amount_won, result) VALUES (?, ?, ?, ?, ?, ?)', [guildId, userId, 'slots', bet, payout, multiplier > 0 ? 'win' : 'loss']);
+        const resultEmoji = multiplier > 0 ? '✅' : '❌';
+        const resultText = multiplier === 5 ? '🎉 JACKPOT!' : multiplier === 1 ? 'Two match!' : 'No match';
+        const embed = new EmbedBuilder().setTitle('🎰 Slot Machine').setColor(multiplier > 0 ? '#00FF99' : '#FF6B6B').addFields({ name: 'Spin', value: `${reel1} ${reel2} ${reel3}`, inline: false }, { name: 'Bet', value: `${bet} coins`, inline: true }, { name: 'Payout', value: `${payout} coins`, inline: true }, { name: 'Balance', value: `${newCoins} coins`, inline: true }).setDescription(`${resultEmoji} ${resultText}`);
+        interaction.reply({ embeds: [embed] });
+      });
+    });
   }
 });
 
