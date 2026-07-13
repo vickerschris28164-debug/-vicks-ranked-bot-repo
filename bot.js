@@ -1172,6 +1172,34 @@ client.on('interactionCreate', async interaction => {
 
       interaction.reply({ embeds: [embed] });
     });
+  } else if (commandName === 'daily') {
+    const userId = interaction.user.id;
+    const guildId = interaction.guild.id;
+    const now = new Date();
+    const today = now.toISOString().split('T')[0];
+    db.get('SELECT coins, last_daily FROM player_coins WHERE guild_id = ? AND user_id = ?', [guildId, userId], (err, row) => {
+      if (err) return interaction.reply('Error checking daily reward');
+      const lastDaily = row?.last_daily ? new Date(row.last_daily).toISOString().split('T')[0] : null;
+      if (lastDaily === today) {
+        return interaction.reply('❌ You already claimed your daily reward today! Come back tomorrow.');
+      }
+      const reward = 100;
+      const newCoins = (row?.coins || 0) + reward;
+      db.run('INSERT OR REPLACE INTO player_coins (guild_id, user_id, coins, last_daily) VALUES (?, ?, ?, ?)', [guildId, userId, newCoins, now.toISOString()], (err) => {
+        if (err) return interaction.reply('Error claiming daily reward');
+        const embed = new EmbedBuilder().setTitle('💰 Daily Reward Claimed!').setColor('#FFD700').addFields({ name: 'Coins Earned', value: `+${reward}`, inline: true }, { name: 'Total Coins', value: `${newCoins}`, inline: true });
+        interaction.reply({ embeds: [embed] });
+      });
+    });
+  } else if (commandName === 'coins') {
+    const player = interaction.options.getUser('player') || interaction.user;
+    const guildId = interaction.guild.id;
+    db.get('SELECT coins FROM player_coins WHERE guild_id = ? AND user_id = ?', [guildId, player.id], (err, row) => {
+      if (err) return interaction.reply('Error fetching coins');
+      const coins = row?.coins || 0;
+      const embed = new EmbedBuilder().setTitle(`💵 ${player.username}'s Coin Balance`).setColor('#FFD700').setDescription(`**${coins}** coins`);
+      interaction.reply({ embeds: [embed] });
+    });
   }
 });
 
