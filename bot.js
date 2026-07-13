@@ -1103,25 +1103,28 @@ client.on('interactionCreate', async interaction => {
     const player = interaction.options.getUser('player') || interaction.user;
     const guildId = interaction.guild.id;
 
-    db.get('SELECT xp, level FROM user_levels WHERE guild_id = ? AND user_id = ?', [guildId, player.id], (err, row) => {
-      if (err) {
-        console.error('Balance query error:', err);
+    db.run(`INSERT OR IGNORE INTO user_levels (guild_id, user_id, name, xp, level) VALUES (?, ?, ?, 0, 1)`, [guildId, player.id, player.username], (insertErr) => {
+      if (insertErr) {
+        console.error('Balance insert error:', insertErr);
         return interaction.reply('Error fetching balance');
       }
 
-      if (!row) {
-        return interaction.reply(`${player.username} has not earned any XP yet.`);
-      }
+      db.get('SELECT xp, level FROM user_levels WHERE guild_id = ? AND user_id = ?', [guildId, player.id], (err, row) => {
+        if (err || !row) {
+          console.error('Balance query error:', err);
+          return interaction.reply('Error fetching balance');
+        }
 
-      const embed = new EmbedBuilder()
-        .setTitle(`💰 ${player.username}'s Balance`)
-        .setColor('#00FF99')
-        .addFields(
-          { name: 'XP Balance', value: `${row.xp} XP`, inline: true },
-          { name: 'Level', value: `${row.level}`, inline: true }
-        );
+        const embed = new EmbedBuilder()
+          .setTitle(`💰 ${player.username}'s Balance`)
+          .setColor('#00FF99')
+          .addFields(
+            { name: 'XP Balance', value: `${row.xp} XP`, inline: true },
+            { name: 'Level', value: `${row.level}`, inline: true }
+          );
 
-      interaction.reply({ embeds: [embed] });
+        interaction.reply({ embeds: [embed] });
+      });
     });
   }
 });
