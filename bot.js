@@ -1123,6 +1123,40 @@ client.on('interactionCreate', async interaction => {
 
       interaction.reply({ embeds: [embed] });
     });
+  } else if (commandName === 'blackjack') {
+    await interaction.deferReply();
+    const userId = interaction.user.id;
+    const guildId = interaction.guild.id;
+    const bet = interaction.options.getInteger('amount');
+    db.get('SELECT coins FROM player_coins WHERE guild_id = ? AND user_id = ?', [guildId, userId], (err, row) => {
+      if (err || !row || row.coins < bet) return interaction.editReply(`❌ You don't have enough coins! You have ${row?.coins || 0}, bet is ${bet}`);
+      const cardValue = (card) => (card >= 2 && card <= 9) ? card : (card === 1) ? 11 : 10;
+      const getScore = (hand) => { let score = hand.reduce((sum, card) => sum + cardValue(card), 0); const aces = hand.filter(card => card === 1).length; while (score > 21 && aces > 0) { score -= 10; } return score; };
+      const getCardDisplay = (card) => { const displays = ['', 'A', '2', '3', '4', '5', '6', '7', '8', '9', '10', 'J', 'Q', 'K']; return displays[card] || ''; };
+      const playerHand = [Math.ceil(Math.random() * 13), Math.ceil(Math.random() * 13)];
+      const dealerHand = [Math.ceil(Math.random() * 13), Math.ceil(Math.random() * 13)];
+      const playerScore = getScore(playerHand);
+      const dealerScore = getScore(dealerHand);
+      let finalDealerHand = [...dealerHand];
+      while (getScore(finalDealerHand) < 17) finalDealerHand.push(Math.ceil(Math.random() * 13));
+      const finalDealerScore = getScore(finalDealerHand);
+      let result = 'loss', payout = 0;
+      if (playerScore > 21) result = 'loss';
+      else if (finalDealerScore > 21) { result = 'win'; payout = bet * 2; }
+      else if (playerScore > finalDealerScore) { result = 'win'; payout = bet * 2; }
+      else if (playerScore === finalDealerScore) { result = 'push'; payout = bet; }
+      const newCoins = row.coins - bet + payout;
+      db.run('UPDATE player_coins SET coins = ? WHERE guild_id = ? AND user_id = ?', [newCoins, guildId, userId], (err) => {
+        if (err) return interaction.editReply('Error processing bet');
+        db.run('INSERT INTO gambling_history (guild_id, user_id, game_type, amount_bet, amount_won, result) VALUES (?, ?, ?, ?, ?, ?)', [guildId, userId, 'blackjack', bet, payout, result]);
+        const playerCardStr = playerHand.map(c => getCardDisplay(c)).join(' ');
+        const dealerCardStr = finalDealerHand.map(c => getCardDisplay(c)).join(' ');
+        const resultEmoji = result === 'win' ? '✅' : result === 'push' ? '🤝' : '❌';
+        const resultText = result === 'win' ? 'You win!' : result === 'push' ? 'Push!' : 'Dealer wins';
+        const embed = new EmbedBuilder().setTitle('🃏 Blackjack').setColor(result === 'win' ? '#00FF99' : result === 'push' ? '#FFD700' : '#FF6B6B').addFields({ name: 'Your Hand', value: `${playerCardStr} (${playerScore})`, inline: true }, { name: 'Dealer Hand', value: `${dealerCardStr} (${finalDealerScore})`, inline: true }, { name: 'Bet', value: `${bet} coins`, inline: true }, { name: 'Payout', value: `${payout} coins`, inline: true }, { name: 'Balance', value: `${newCoins} coins`, inline: true }).setDescription(`${resultEmoji} ${resultText}`);
+        interaction.editReply({ embeds: [embed] });
+      });
+    });
   }
 });
 
