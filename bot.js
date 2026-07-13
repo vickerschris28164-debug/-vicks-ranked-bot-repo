@@ -1102,25 +1102,22 @@ client.on('interactionCreate', async interaction => {
   } else if (commandName === 'balance') {
     const player = interaction.options.getUser('player') || interaction.user;
     const guildId = interaction.guild.id;
-
-    db.get('SELECT xp, level FROM user_levels WHERE guild_id = ? AND user_id = ?', [guildId, player.id], (err, row) => {
-      if (err) {
-        console.error('Balance query error:', err);
-        return interaction.reply('Error fetching balance');
-      }
-
+    
+    getLevelInfo(player.id, guildId, (err, row) => {
+      if (err) return interaction.reply('Error fetching balance');
+      
       if (!row) {
-        return interaction.reply(`${player.username} has not earned any XP yet.`);
+        return interaction.reply(`${player.username} has no XP yet. Send messages or join voice to earn XP!`);
       }
-
+      
       const embed = new EmbedBuilder()
-        .setTitle(`💰 ${player.username}'s Balance`)
-        .setColor('#00FF99')
+        .setTitle(`💰 ${row.name}'s Balance`)
+        .setColor('#FFD700')
         .addFields(
-          { name: 'XP Balance', value: `${row.xp} XP`, inline: true },
+          { name: 'XP', value: `${row.xp}`, inline: true },
           { name: 'Level', value: `${row.level}`, inline: true }
         );
-
+      
       interaction.reply({ embeds: [embed] });
     });
   }
