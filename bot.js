@@ -483,6 +483,13 @@ client.once('ready', async () => {
       .addSubcommand(sub =>
         sub.setName('inventory')
           .setDescription('View your cosmetics')),
+    new SlashCommandBuilder()
+      .setName('balance')
+      .setDescription('Check your XP balance')
+      .addUserOption(option =>
+        option.setName('player')
+          .setDescription('The player to check balance for')
+          .setRequired(false)),
   ];
 
   slashCommands = commands;
@@ -1092,6 +1099,30 @@ client.on('interactionCreate', async interaction => {
         interaction.reply({ embeds: [embed] });
       });
     }
+  } else if (commandName === 'balance') {
+    const player = interaction.options.getUser('player') || interaction.user;
+    const guildId = interaction.guild.id;
+
+    db.get('SELECT xp, level FROM user_levels WHERE guild_id = ? AND user_id = ?', [guildId, player.id], (err, row) => {
+      if (err) {
+        console.error('Balance query error:', err);
+        return interaction.reply('Error fetching balance');
+      }
+
+      if (!row) {
+        return interaction.reply(`${player.username} has not earned any XP yet.`);
+      }
+
+      const embed = new EmbedBuilder()
+        .setTitle(`💰 ${player.username}'s Balance`)
+        .setColor('#00FF99')
+        .addFields(
+          { name: 'XP Balance', value: `${row.xp} XP`, inline: true },
+          { name: 'Level', value: `${row.level}`, inline: true }
+        );
+
+      interaction.reply({ embeds: [embed] });
+    });
   }
 });
 
