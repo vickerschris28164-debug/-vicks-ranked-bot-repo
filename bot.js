@@ -1,4 +1,4 @@
-const { Client, GatewayIntentBits, SlashCommandBuilder, EmbedBuilder, REST, Routes } = require('discord.js');
+const { Client, GatewayIntentBits, SlashCommandBuilder, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle } = require('discord.js');
 const sqlite3 = require('sqlite3').verbose();
 const cron = require('node-cron');
 const path = require('path');
@@ -29,6 +29,219 @@ const voiceXpCooldowns = new Map();
 const BUMP_COOLDOWN = 2 * 60 * 60 * 1000; // 2 hours in milliseconds
 
 const db = new sqlite3.Database(dbPath);
+
+const DEFAULT_COSMETICS = [
+  { name: 'Bronze Frame', cost: 250, emoji: '🟫', category: 'frame', rarity: 'common', slot: 'frame' },
+  { name: 'Spark Tag', cost: 300, emoji: '⚡', category: 'suffix', rarity: 'common', slot: 'suffix' },
+  { name: 'Forest Banner', cost: 450, emoji: '🌿', category: 'banner', rarity: 'common', slot: 'banner' },
+  { name: 'Arena Pro', cost: 1200, emoji: '🏟️', category: 'prefix', rarity: 'rare', slot: 'prefix' },
+  { name: 'Neon Frame', cost: 900, emoji: '🟦', category: 'frame', rarity: 'rare', slot: 'frame' },
+  { name: 'Victory Confetti', cost: 1500, emoji: '🎉', category: 'effect', rarity: 'rare', slot: 'effect' },
+  { name: 'Elite Duelist', cost: 2800, emoji: '🛡️', category: 'prefix', rarity: 'epic', slot: 'prefix' },
+  { name: 'Cosmic Banner', cost: 3200, emoji: '🌌', category: 'banner', rarity: 'epic', slot: 'banner' },
+  { name: 'Flame Aura', cost: 2200, emoji: '🔥', category: 'aura', rarity: 'epic', slot: 'aura' },
+  { name: 'Hideout Legend', cost: 5000, emoji: '👑', category: 'prefix', rarity: 'legendary', slot: 'prefix' },
+  { name: 'Golden Crown', cost: 6500, emoji: '💫', category: 'badge', rarity: 'legendary', slot: 'badge' },
+  { name: 'Founders Star', cost: 8000, emoji: '🌟', category: 'badge', rarity: 'legendary', slot: 'badge' },
+];
+
+const activeBlackjackGames = new Map();
+const BLACKJACK_TIMEOUT_MS = 2 * 60 * 1000;
+
+function drawBlackjackCard() {
+  return Math.ceil(Math.random() * 13);
+}
+
+function getBlackjackCardValue(card) {
+  if (card >= 2 && card <= 9) return card;
+  if (card === 1) return 11;
+  return 10;
+}
+
+function getBlackjackScore(hand) {
+  let score = hand.reduce((sum, card) => sum + getBlackjackCardValue(card), 0);
+  let aces = hand.filter(card => card === 1).length;
+
+  while (score > 21 && aces > 0) {
+    score -= 10;
+    aces -= 1;
+  }
+
+  return score;
+}
+
+function getBlackjackCardDisplay(card) {
+  const displays = ['', 'A', '2', '3', '4', '5', '6', '7', '8', '9', '10', 'J', 'Q', 'K'];
+  return displays[card] || '?';
+}
+
+function formatBlackjackHand(hand) {
+  return hand.map(card => getBlackjackCardDisplay(card)).join(' ');
+}
+
+function getBlackjackButtons(gameKey, disabled = false) {
+  return [
+    new ActionRowBuilder().addComponents(
+      new ButtonBuilder()
+        .setCustomId(`blackjack_hit:${gameKey}`)
+        .setLabel('Hit')
+        .setStyle(ButtonStyle.Primary)
+        .setDisabled(disabled),
+      new ButtonBuilder()
+        .setCustomId(`blackjack_stand:${gameKey}`)
+        .setLabel('Stand')
+        .setStyle(ButtonStyle.Secondary)
+        .setDisabled(disabled)
+    ),
+  ];
+}
+
+function createBlackjackEmbed(game, options = {}) {
+  const revealDealer = options.revealDealer || false;
+  const playerScore = getBlackjackScore(game.playerHand);
+  const dealerScore = getBlackjackScore(game.dealerHand);
+  const color = options.color || '#1E90FF';
+  const statusText = options.statusText || 'Choose **Hit** to draw a card or **Stand** to end your turn.';
+
+  const dealerValuePreview = getBlackjackCardValue(game.dealerHand[0]);
+  const dealerHandText = revealDealer
+    ? `${formatBlackjackHand(game.dealerHand)} (${dealerScore})`
+    : `${getBlackjackCardDisplay(game.dealerHand[0])} ? (${dealerValuePreview}+)`;
+
+  const embed = new EmbedBuilder()
+    .setTitle('🃏 Blackjack')
+    .setColor(color)
+    .setDescription(statusText)
+    .addFields(
+      { name: 'Your Hand', value: `${formatBlackjackHand(game.playerHand)} (${playerScore})`, inline: true },
+      { name: 'Dealer Hand', value: dealerHandText, inline: true },
+      { name: 'Bet', value: `${game.bet} coins`, inline: true }
+    );
+
+  if (typeof options.payout === 'number') {
+    embed.addFields({ name: 'Payout', value: `${options.payout} coins`, inline: true });
+  }
+
+  if (typeof options.balance === 'number') {
+    embed.addFields({ name: 'Balance', value: `${options.balance} coins`, inline: true });
+  }
+
+  return embed;
+}
+
+function resolveBlackjackResult(game) {
+  const playerScore = getBlackjackScore(game.playerHand);
+
+  while (getBlackjackScore(game.dealerHand) < 17) {
+    game.dealerHand.push(drawBlackjackCard());
+  }
+
+  const dealerScore = getBlackjackScore(game.dealerHand);
+  if (playerScore > 21) return 'loss';
+  if (dealerScore > 21) return 'win';
+  if (playerScore > dealerScore) return 'win';
+  if (playerScore === dealerScore) return 'push';
+  return 'loss';
+}
+
+function getBlackjackPayout(bet, result) {
+  if (result === 'win') return bet * 2;
+  if (result === 'push') return bet;
+  return 0;
+}
+
+function persistBlackjackOutcome(guildId, userId, bet, result, callback) {
+  const payout = getBlackjackPayout(bet, result);
+
+  db.get('SELECT coins FROM player_coins WHERE guild_id = ? AND user_id = ?', [guildId, userId], (err, row) => {
+    if (err || !row || row.coins < bet) {
+      return callback(err || new Error('Not enough coins to settle blackjack hand'));
+    }
+
+    const newCoins = row.coins - bet + payout;
+    db.run('UPDATE player_coins SET coins = ? WHERE guild_id = ? AND user_id = ?', [newCoins, guildId, userId], (updateErr) => {
+      if (updateErr) return callback(updateErr);
+
+      db.run(
+        'INSERT INTO gambling_history (guild_id, user_id, game_type, amount_bet, amount_won, result) VALUES (?, ?, ?, ?, ?, ?)',
+        [guildId, userId, 'blackjack', bet, payout, result],
+        (insertErr) => {
+          if (insertErr) return callback(insertErr);
+          callback(null, { payout, newCoins });
+        }
+      );
+    });
+  });
+}
+
+function clearBlackjackTimeout(game) {
+  if (game && game.timeoutId) {
+    clearTimeout(game.timeoutId);
+    game.timeoutId = null;
+  }
+}
+
+function editBlackjackMessage(game, payload) {
+  if (!game?.channelId || !game?.messageId) return;
+
+  client.channels.fetch(game.channelId)
+    .then((channel) => {
+      if (!channel?.isTextBased()) return;
+      channel.messages.fetch(game.messageId)
+        .then((message) => message.edit(payload))
+        .catch((err) => {
+          console.error('Blackjack message fetch/edit error:', err);
+        });
+    })
+    .catch((err) => {
+      console.error('Blackjack channel fetch error:', err);
+    });
+}
+
+function autoStandBlackjackGame(gameKey) {
+  const game = activeBlackjackGames.get(gameKey);
+  if (!game) return;
+
+  clearBlackjackTimeout(game);
+  activeBlackjackGames.delete(gameKey);
+
+  const result = resolveBlackjackResult(game);
+  persistBlackjackOutcome(game.guildId, game.userId, game.bet, result, (err, outcome) => {
+    if (err) {
+      console.error('Blackjack auto-stand settle error:', err);
+      editBlackjackMessage(game, {
+        content: 'This blackjack hand timed out, but there was an error settling it. Please contact an admin.',
+        embeds: [],
+        components: [],
+      });
+      return;
+    }
+
+    const statusText = result === 'win'
+      ? '⏱️ Hand timed out. Auto-stand applied and you win!'
+      : result === 'push'
+        ? '⏱️ Hand timed out. Auto-stand resulted in a push.'
+        : '⏱️ Hand timed out. Auto-stand applied and dealer wins.';
+
+    const color = result === 'win' ? '#00FF99' : result === 'push' ? '#FFD700' : '#FF6B6B';
+    const embed = createBlackjackEmbed(game, {
+      revealDealer: true,
+      color,
+      statusText,
+      payout: outcome.payout,
+      balance: outcome.newCoins,
+    });
+
+    editBlackjackMessage(game, { embeds: [embed], components: getBlackjackButtons(gameKey, true) });
+  });
+}
+
+function scheduleBlackjackTimeout(game) {
+  clearBlackjackTimeout(game);
+  game.timeoutId = setTimeout(() => {
+    autoStandBlackjackGame(game.gameKey);
+  }, BLACKJACK_TIMEOUT_MS);
+}
 
 function getCurrentMonth() {
   const now = new Date();
@@ -217,6 +430,53 @@ db.serialize(() => {
     result TEXT,
     timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
   )`);
+
+  db.run(`CREATE TABLE IF NOT EXISTS cosmetics_shop (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT UNIQUE,
+    cost INTEGER NOT NULL,
+    emoji TEXT NOT NULL,
+    category TEXT DEFAULT 'general',
+    rarity TEXT DEFAULT 'common',
+    slot TEXT DEFAULT 'badge'
+  )`);
+
+  db.run(`CREATE TABLE IF NOT EXISTS player_cosmetics (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    guild_id TEXT NOT NULL,
+    user_id TEXT NOT NULL,
+    cosmetic_id INTEGER NOT NULL,
+    is_equipped INTEGER DEFAULT 0,
+    UNIQUE(guild_id, user_id, cosmetic_id),
+    FOREIGN KEY (cosmetic_id) REFERENCES cosmetics_shop(id)
+  )`);
+
+  db.all(`PRAGMA table_info(cosmetics_shop)`, (tableErr, rows = []) => {
+    if (tableErr) {
+      return console.error('Cosmetics shop table info error:', tableErr);
+    }
+
+    const columns = rows.map((row) => row.name);
+    if (!columns.includes('category')) {
+      db.run(`ALTER TABLE cosmetics_shop ADD COLUMN category TEXT DEFAULT 'general'`);
+    }
+    if (!columns.includes('rarity')) {
+      db.run(`ALTER TABLE cosmetics_shop ADD COLUMN rarity TEXT DEFAULT 'common'`);
+    }
+    if (!columns.includes('slot')) {
+      db.run(`ALTER TABLE cosmetics_shop ADD COLUMN slot TEXT DEFAULT 'badge'`);
+    }
+  });
+
+  const seedStmt = db.prepare(`
+    INSERT OR IGNORE INTO cosmetics_shop (name, cost, emoji, category, rarity, slot)
+    VALUES (?, ?, ?, ?, ?, ?)
+  `);
+
+  DEFAULT_COSMETICS.forEach((item) => {
+    seedStmt.run(item.name, item.cost, item.emoji, item.category, item.rarity, item.slot);
+  });
+  seedStmt.finalize();
 });
 
 // Register slash commands
@@ -440,11 +700,66 @@ client.once('clientReady', async () => {
           .setRequired(true)),
     new SlashCommandBuilder()
       .setName('blackjack')
-      .setDescription('Play a quick blackjack hand')
+      .setDescription('Play interactive blackjack (Hit or Stand)')
       .addIntegerOption(option =>
         option.setName('amount')
           .setDescription('Bet amount')
           .setRequired(true)),
+    new SlashCommandBuilder()
+      .setName('shop')
+      .setDescription('Browse or buy XP cosmetics')
+      .addSubcommand(subcommand =>
+        subcommand
+          .setName('view')
+          .setDescription('View all cosmetics, optionally filtered by category')
+          .addStringOption(option =>
+            option.setName('category')
+              .setDescription('Filter by cosmetic type')
+              .setRequired(false)
+              .addChoices(
+                { name: 'All', value: 'all' },
+                { name: 'Prefix', value: 'prefix' },
+                { name: 'Suffix', value: 'suffix' },
+                { name: 'Frame', value: 'frame' },
+                { name: 'Banner', value: 'banner' },
+                { name: 'Aura', value: 'aura' },
+                { name: 'Effect', value: 'effect' },
+                { name: 'Badge', value: 'badge' }
+              )))
+      .addSubcommand(subcommand =>
+        subcommand
+          .setName('buy')
+          .setDescription('Buy a cosmetic with XP')
+          .addStringOption(option =>
+            option.setName('item')
+              .setDescription('Name of the cosmetic item')
+              .setRequired(true))),
+    new SlashCommandBuilder()
+      .setName('cosmetic')
+      .setDescription('Manage your owned cosmetics')
+      .addSubcommand(subcommand =>
+        subcommand
+          .setName('inventory')
+          .setDescription('View your owned cosmetics'))
+      .addSubcommand(subcommand =>
+        subcommand
+          .setName('equip')
+          .setDescription('Equip a cosmetic you own')
+          .addStringOption(option =>
+            option.setName('item')
+              .setDescription('Name of the cosmetic item')
+              .setRequired(true)))
+      .addSubcommand(subcommand =>
+        subcommand
+          .setName('unequip')
+          .setDescription('Unequip all active cosmetics')),
+    new SlashCommandBuilder()
+      .setName('balance')
+      .setDescription('Check XP balance and level')
+      .addUserOption(option =>
+        option.setName('player')
+          .setDescription('Player to check')
+          .setRequired(false)),
     new SlashCommandBuilder()
       .setName('bump')
       .setDescription('Bump the server on Disboard'),
@@ -477,6 +792,30 @@ client.once('clientReady', async () => {
         option.setName('player')
           .setDescription('The player to check')
           .setRequired(false)),
+    new SlashCommandBuilder()
+      .setName('timer')
+      .setDescription('Start a match timer')
+      .addStringOption(option =>
+        option.setName('match_type')
+          .setDescription('Match type')
+          .setRequired(true)
+          .addChoices(
+            { name: 'Best of 1 (30 min)', value: 'bo1' },
+            { name: 'Best of 3 (60 min)', value: 'bo3' }
+          )),
+    new SlashCommandBuilder()
+      .setName('comments')
+      .setDescription('Post or view match comments')
+      .addSubcommand(sub =>
+        sub.setName('post')
+          .setDescription('Post a match comment')
+          .addStringOption(option =>
+            option.setName('message')
+              .setDescription('Your comment')
+              .setRequired(true)))
+      .addSubcommand(sub =>
+        sub.setName('view')
+          .setDescription('View recent match comments')),
   ];
 
   slashCommands = commands;
@@ -577,6 +916,120 @@ setInterval(() => {
 }, 60 * 1000);
 
 client.on('interactionCreate', async interaction => {
+  if (interaction.isButton()) {
+    if (!interaction.customId.startsWith('blackjack_')) return;
+
+    const [action, gameKey] = interaction.customId.split(':');
+    const game = activeBlackjackGames.get(gameKey);
+
+    if (!game) {
+      try {
+        let expiredEmbed;
+        if (interaction.message?.embeds?.length) {
+          expiredEmbed = EmbedBuilder.from(interaction.message.embeds[0])
+            .setDescription('⏱️ This blackjack hand expired or the bot restarted. Start a new hand with `/blackjack`.');
+        } else {
+          expiredEmbed = new EmbedBuilder()
+            .setTitle('🃏 Blackjack')
+            .setColor('#808080')
+            .setDescription('⏱️ This blackjack hand expired or the bot restarted. Start a new hand with `/blackjack`.');
+        }
+
+        await interaction.update({
+          embeds: [expiredEmbed],
+          components: getBlackjackButtons(gameKey, true),
+        });
+      } catch (err) {
+        console.error('Blackjack stale-hand update error:', err);
+        if (!interaction.replied && !interaction.deferred) {
+          await interaction.reply({ content: 'This blackjack hand is no longer active. Start a new one with `/blackjack`.', ephemeral: true });
+        }
+      }
+      return;
+    }
+
+    if (interaction.user.id !== game.userId || interaction.guildId !== game.guildId) {
+      return interaction.reply({ content: 'Only the player who started this hand can use these buttons.', ephemeral: true });
+    }
+
+    if (action === 'blackjack_hit') {
+      game.playerHand.push(drawBlackjackCard());
+      const playerScore = getBlackjackScore(game.playerHand);
+
+      if (playerScore > 21) {
+        clearBlackjackTimeout(game);
+        activeBlackjackGames.delete(gameKey);
+        persistBlackjackOutcome(game.guildId, game.userId, game.bet, 'loss', (err, outcome) => {
+          if (err) {
+            console.error('Blackjack settle error:', err);
+            return interaction.update({
+              content: 'Error settling this blackjack hand. No coins were changed.',
+              embeds: [],
+              components: [],
+            });
+          }
+
+          const embed = createBlackjackEmbed(game, {
+            revealDealer: true,
+            color: '#FF6B6B',
+            statusText: '❌ Bust! You went over 21.',
+            payout: outcome.payout,
+            balance: outcome.newCoins,
+          });
+
+          interaction.update({ embeds: [embed], components: getBlackjackButtons(gameKey, true) });
+        });
+      } else {
+        scheduleBlackjackTimeout(game);
+        const embed = createBlackjackEmbed(game, {
+          revealDealer: false,
+          color: '#1E90FF',
+          statusText: 'Your move: Hit or Stand?',
+        });
+
+        interaction.update({ embeds: [embed], components: getBlackjackButtons(gameKey, false) });
+      }
+      return;
+    }
+
+    if (action === 'blackjack_stand') {
+      clearBlackjackTimeout(game);
+      activeBlackjackGames.delete(gameKey);
+      const result = resolveBlackjackResult(game);
+
+      persistBlackjackOutcome(game.guildId, game.userId, game.bet, result, (err, outcome) => {
+        if (err) {
+          console.error('Blackjack settle error:', err);
+          return interaction.update({
+            content: 'Error settling this blackjack hand. No coins were changed.',
+            embeds: [],
+            components: [],
+          });
+        }
+
+        const statusText = result === 'win'
+          ? '✅ You win!'
+          : result === 'push'
+            ? '🤝 Push!'
+            : '❌ Dealer wins.';
+
+        const color = result === 'win' ? '#00FF99' : result === 'push' ? '#FFD700' : '#FF6B6B';
+        const embed = createBlackjackEmbed(game, {
+          revealDealer: true,
+          color,
+          statusText,
+          payout: outcome.payout,
+          balance: outcome.newCoins,
+        });
+
+        interaction.update({ embeds: [embed], components: getBlackjackButtons(gameKey, true) });
+      });
+      return;
+    }
+
+    return;
+  }
+
   if (!interaction.isChatInputCommand()) return;
 
   const { commandName } = interaction;
@@ -769,11 +1222,17 @@ client.on('interactionCreate', async interaction => {
         { name: '/leaderboard [ladder]', value: 'View the current monthly leaderboard.', inline: false },
         { name: '/stats [player] [ladder]', value: 'Show monthly stats for yourself or another player.', inline: false },
         { name: '/level [player]', value: 'Show XP and level progress for activity-based leveling.', inline: false },
+        { name: '/shop view [category]', value: 'Browse cosmetics you can buy with XP.', inline: false },
+        { name: '/shop buy item:name', value: 'Buy a cosmetic item with your XP.', inline: false },
+        { name: '/cosmetic inventory', value: 'View your owned cosmetics and equipped items.', inline: false },
+        { name: '/cosmetic equip item:name', value: 'Equip a cosmetic from your inventory.', inline: false },
+        { name: '/cosmetic unequip', value: 'Unequip currently equipped cosmetics.', inline: false },
+        { name: '/balance [player]', value: 'Check XP balance and current level.', inline: false },
         { name: '/daily', value: 'Claim your daily coin reward.', inline: false },
         { name: '/coins [player]', value: 'Check a player\'s coin balance.', inline: false },
         { name: '/coinflip amount:integer choice:heads|tails', value: 'Bet your coins on a coin flip.', inline: false },
         { name: '/slots amount:integer', value: 'Play the slot machine for coins.', inline: false },
-        { name: '/blackjack amount:integer', value: 'Play a quick blackjack hand (single bet).', inline: false },
+        { name: '/blackjack amount:integer', value: 'Play interactive blackjack with Hit/Stand (auto-stands after 2 min idle).', inline: false },
         { name: '/history_list [ladder]', value: 'View all months with leaderboard data.', inline: false },
         { name: '/history month:YYYY-MM [ladder]', value: 'View leaderboard for a specific month.', inline: false },
         { name: '/player_history [player] [ladder]', value: 'View a player\'s stats across all months.', inline: false },
@@ -1148,38 +1607,82 @@ client.on('interactionCreate', async interaction => {
     });
 
   } else if (commandName === 'blackjack') {
-    await interaction.deferReply();
     const userId = interaction.user.id;
     const guildId = interaction.guild.id;
     const bet = interaction.options.getInteger('amount');
+
+    if (bet <= 0) {
+      return interaction.reply('Bet amount must be greater than 0.');
+    }
+
+    const gameKey = `${guildId}:${userId}`;
+    if (activeBlackjackGames.has(gameKey)) {
+      return interaction.reply({ content: 'You already have an active blackjack hand. Finish it before starting a new one.', ephemeral: true });
+    }
+
     db.get('SELECT coins FROM player_coins WHERE guild_id = ? AND user_id = ?', [guildId, userId], (err, row) => {
-      if (err || !row || row.coins < bet) return interaction.editReply(`❌ You don't have enough coins! You have ${row?.coins || 0}, bet is ${bet}`);
-      const cardValue = (card) => (card >= 2 && card <= 9) ? card : (card === 1) ? 11 : 10;
-      const getScore = (hand) => { let score = hand.reduce((sum, card) => sum + cardValue(card), 0); const aces = hand.filter(card => card === 1).length; while (score > 21 && aces > 0) { score -= 10; } return score; };
-      const getCardDisplay = (card) => { const displays = ['', 'A', '2', '3', '4', '5', '6', '7', '8', '9', '10', 'J', 'Q', 'K']; return displays[card] || ''; };
-      const playerHand = [Math.ceil(Math.random() * 13), Math.ceil(Math.random() * 13)];
-      const dealerHand = [Math.ceil(Math.random() * 13), Math.ceil(Math.random() * 13)];
-      const playerScore = getScore(playerHand);
-      const dealerScore = getScore(dealerHand);
-      let finalDealerHand = [...dealerHand];
-      while (getScore(finalDealerHand) < 17) finalDealerHand.push(Math.ceil(Math.random() * 13));
-      const finalDealerScore = getScore(finalDealerHand);
-      let result = 'loss', payout = 0;
-      if (playerScore > 21) result = 'loss';
-      else if (finalDealerScore > 21) { result = 'win'; payout = bet * 2; }
-      else if (playerScore > finalDealerScore) { result = 'win'; payout = bet * 2; }
-      else if (playerScore === finalDealerScore) { result = 'push'; payout = bet; }
-      const newCoins = row.coins - bet + payout;
-      db.run('UPDATE player_coins SET coins = ? WHERE guild_id = ? AND user_id = ?', [newCoins, guildId, userId], (err) => {
-        if (err) return interaction.editReply('Error processing bet');
-        db.run('INSERT INTO gambling_history (guild_id, user_id, game_type, amount_bet, amount_won, result) VALUES (?, ?, ?, ?, ?, ?)', [guildId, userId, 'blackjack', bet, payout, result]);
-        const playerCardStr = playerHand.map(c => getCardDisplay(c)).join(' ');
-        const dealerCardStr = finalDealerHand.map(c => getCardDisplay(c)).join(' ');
-        const resultEmoji = result === 'win' ? '✅' : result === 'push' ? '🤝' : '❌';
-        const resultText = result === 'win' ? 'You win!' : result === 'push' ? 'Push!' : 'Dealer wins';
-        const embed = new EmbedBuilder().setTitle('🃏 Blackjack').setColor(result === 'win' ? '#00FF99' : result === 'push' ? '#FFD700' : '#FF6B6B').addFields({ name: 'Your Hand', value: `${playerCardStr} (${playerScore})`, inline: true }, { name: 'Dealer Hand', value: `${dealerCardStr} (${finalDealerScore})`, inline: true }, { name: 'Bet', value: `${bet} coins`, inline: true }, { name: 'Payout', value: `${payout} coins`, inline: true }, { name: 'Balance', value: `${newCoins} coins`, inline: true }).setDescription(`${resultEmoji} ${resultText}`);
-        interaction.editReply({ embeds: [embed] });
+      if (err || !row || row.coins < bet) return interaction.reply(`❌ You don't have enough coins! You have ${row?.coins || 0}, bet is ${bet}`);
+
+      const game = {
+        gameKey,
+        guildId,
+        userId,
+        bet,
+        playerHand: [drawBlackjackCard(), drawBlackjackCard()],
+        dealerHand: [drawBlackjackCard(), drawBlackjackCard()],
+      };
+
+      const playerScore = getBlackjackScore(game.playerHand);
+      const dealerScore = getBlackjackScore(game.dealerHand);
+
+      if (playerScore === 21 || dealerScore === 21) {
+        let result = 'loss';
+        if (playerScore === 21 && dealerScore === 21) result = 'push';
+        else if (playerScore === 21) result = 'win';
+
+        return persistBlackjackOutcome(guildId, userId, bet, result, (settleErr, outcome) => {
+          if (settleErr) {
+            console.error('Blackjack settle error:', settleErr);
+            return interaction.reply('Error processing blackjack outcome.');
+          }
+
+          const statusText = result === 'win'
+            ? '✅ Blackjack! You win instantly.'
+            : result === 'push'
+              ? '🤝 Both hit blackjack. Push.'
+              : '❌ Dealer blackjack.';
+
+          const color = result === 'win' ? '#00FF99' : result === 'push' ? '#FFD700' : '#FF6B6B';
+          const embed = createBlackjackEmbed(game, {
+            revealDealer: true,
+            color,
+            statusText,
+            payout: outcome.payout,
+            balance: outcome.newCoins,
+          });
+
+          interaction.reply({ embeds: [embed] });
+        });
+      }
+
+      activeBlackjackGames.set(gameKey, game);
+
+      const embed = createBlackjackEmbed(game, {
+        revealDealer: false,
+        color: '#1E90FF',
+        statusText: 'Choose **Hit** or **Stand** to play your hand.',
       });
+
+      interaction.reply({ embeds: [embed], components: getBlackjackButtons(gameKey), fetchReply: true })
+        .then((message) => {
+          game.channelId = message.channelId;
+          game.messageId = message.id;
+          scheduleBlackjackTimeout(game);
+        })
+        .catch((replyErr) => {
+          console.error('Blackjack reply error:', replyErr);
+          activeBlackjackGames.delete(gameKey);
+        });
     });
 
   } else if (commandName === 'bump') {
@@ -1228,10 +1731,19 @@ client.on('interactionCreate', async interaction => {
     const subcommand = interaction.options.getSubcommand();
 
     if (subcommand === 'view') {
-      db.all('SELECT id, name, cost, emoji FROM cosmetics_shop ORDER BY cost ASC', (err, items) => {
-        if (err) return interaction.reply('Error loading shop');
+      const category = interaction.options.getString('category') || 'all';
+      const query = category === 'all'
+        ? 'SELECT id, name, cost, emoji, category, rarity FROM cosmetics_shop ORDER BY cost ASC'
+        : 'SELECT id, name, cost, emoji, category, rarity FROM cosmetics_shop WHERE category = ? ORDER BY cost ASC';
+      const params = category === 'all' ? [] : [category];
 
-        const itemList = items.map(item => `${item.emoji} **${item.name}** - ${item.cost} XP`).join('\n');
+      db.all(query, params, (err, items) => {
+        if (err) return interaction.reply('Error loading shop');
+        if (!items || items.length === 0) return interaction.reply('No cosmetics found in this category.');
+
+        const itemList = items
+          .map(item => `${item.emoji} **${item.name}** - ${item.cost} XP (${item.rarity}, ${item.category})`)
+          .join('\n');
         const embed = new EmbedBuilder()
           .setTitle('🛍️ Cosmetics Shop')
           .setDescription(itemList)
@@ -1290,7 +1802,7 @@ client.on('interactionCreate', async interaction => {
       });
     } else if (subcommand === 'inventory') {
       db.all(`
-        SELECT cs.name, cs.emoji, pc.is_equipped FROM player_cosmetics pc
+        SELECT cs.name, cs.emoji, cs.category, cs.rarity, pc.is_equipped FROM player_cosmetics pc
         JOIN cosmetics_shop cs ON pc.cosmetic_id = cs.id
         WHERE pc.guild_id = ? AND pc.user_id = ?
       `, [guildId, userId], (err, cosmetics) => {
@@ -1299,7 +1811,7 @@ client.on('interactionCreate', async interaction => {
         }
 
         const list = cosmetics.map(c => {
-          return `${c.is_equipped ? '✅' : '  '} ${c.emoji} ${c.name}`;
+          return `${c.is_equipped ? '✅' : '  '} ${c.emoji} ${c.name} (${c.rarity}, ${c.category})`;
         }).join('\n');
 
         const embed = new EmbedBuilder()
@@ -1383,6 +1895,60 @@ client.on('interactionCreate', async interaction => {
         .setThumbnail(player.displayAvatarURL());
       interaction.reply({ embeds: [embed] });
     });
+  } else if (commandName === 'timer') {
+    const matchType = interaction.options.getString('match_type');
+    const duration = matchType === 'bo3' ? 60 : 30;
+    const durationMs = duration * 60 * 1000;
+    const startTime = Date.now();
+    const endTime = startTime + durationMs;
+    
+    const msg = await interaction.reply({ 
+      content: `⏱️ **${getLadderDisplayName(matchType)} Match Timer** - ${duration}min\nStarted at <t:${Math.floor(startTime / 1000)}:t>`, 
+      fetchReply: true 
+    });
+    
+    const updateInterval = setInterval(() => {
+      const now = Date.now();
+      const remaining = Math.max(0, endTime - now);
+      const minutes = Math.floor(remaining / 60000);
+      const seconds = Math.floor((remaining % 60000) / 1000);
+      
+      if (remaining <= 0) {
+        clearInterval(updateInterval);
+        msg.edit(`✅ **Match Complete!** Time's up!`).catch(err => console.error('Timer completion update error:', err));
+      } else if (remaining <= 5 * 60 * 1000 && remaining > 4 * 60 * 1000) {
+        msg.edit(`⚠️ **5 minutes remaining!**`).catch(err => console.error('Timer warning update error:', err));
+      } else {
+        msg.edit(`⏱️ **${getLadderDisplayName(matchType)} Match Timer**\n${minutes}m ${seconds}s remaining`).catch(err => console.error('Timer update error:', err));
+      }
+    }, 10000);
+    
+    setTimeout(() => clearInterval(updateInterval), durationMs + 5000);
+  } else if (commandName === 'comments') {
+    const subcommand = interaction.options.getSubcommand();
+    
+    if (subcommand === 'post') {
+      const message = interaction.options.getString('message');
+      const embed = new EmbedBuilder()
+        .setTitle('💬 Comment Posted')
+        .setColor(0x0099FF)
+        .setDescription(message)
+        .setAuthor({ name: interaction.user.username, iconURL: interaction.user.displayAvatarURL() })
+        .setTimestamp();
+      
+      const commentsChannel = interaction.guild.channels.cache.find(ch => ch.name === 'match-comments');
+      if (commentsChannel) {
+        commentsChannel.send({ embeds: [embed] }).catch(err => {
+          console.error('Error posting comment to match-comments:', err);
+          interaction.reply('Could not post comment to match-comments channel.');
+        });
+        interaction.reply('Your comment has been posted!');
+      } else {
+        interaction.reply('match-comments channel not found. Ask an admin to create it.');
+      }
+    } else if (subcommand === 'view') {
+      interaction.reply('Match comments feature coming soon!');
+    }
   }
 });
 
@@ -1413,16 +1979,5 @@ if (!token) {
   console.error('No Discord bot token found. Set DISCORD_TOKEN, BOT_TOKEN, or TOKEN in your environment or .env file.');
   process.exit(1);
 }
-
-// Temporary: Clear global commands (run once, then remove this block)
-client.once('ready', async () => {
-  try {
-    const rest = new REST({ version: '10' }).setToken(token);
-    await rest.put(Routes.applicationCommands(client.user.id), { body: [] });
-    console.log('Global commands cleared.');
-  } catch (err) {
-    console.error('Error clearing global commands:', err);
-  }
-});
 
 client.login(token);
