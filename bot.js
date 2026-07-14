@@ -919,7 +919,8 @@ client.on('interactionCreate', async interaction => {
   if (interaction.isButton()) {
     if (!interaction.customId.startsWith('blackjack_')) return;
 
-    const [action, gameKey] = interaction.customId.split(':');
+    const [action, ...gameKeyParts] = interaction.customId.split(':');
+    const gameKey = gameKeyParts.join(':');
     const game = activeBlackjackGames.get(gameKey);
 
     if (!game) {
