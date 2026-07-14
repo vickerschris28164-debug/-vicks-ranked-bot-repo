@@ -32,6 +32,22 @@ function shouldUseGuildScopedRegistration(configuredGuildIds, resolvedGuildIds) 
   return configuredGuildIds.length > 0 || resolvedGuildIds.length > 0;
 }
 
+function resolveGuildIdsForRegistration(configuredGuildIds, discoveredGuildIds, allowUnverifiedGuildIds = false) {
+  if (discoveredGuildIds.length > 0) {
+    if (allowUnverifiedGuildIds) {
+      const merged = new Set(discoveredGuildIds);
+      configuredGuildIds.forEach((id) => merged.add(id));
+      return Array.from(merged);
+    }
+
+    return configuredGuildIds.length > 0
+      ? configuredGuildIds.filter((id) => discoveredGuildIds.includes(id))
+      : discoveredGuildIds;
+  }
+
+  return allowUnverifiedGuildIds ? configuredGuildIds : [];
+}
+
 async function getGuildIdsForRegistration(client, configuredGuildIds, retries = 5, delayMs = 5000, timeoutMs = 10000) {
   const discoveredGuildIds = new Set(configuredGuildIds);
 
@@ -66,6 +82,7 @@ async function registerSlashCommands(client, commands, options = {}) {
   const delayMs = options.delayMs ?? 5000;
   const requestTimeoutMs = options.requestTimeoutMs ?? 15000;
   const guildFetchTimeoutMs = options.guildFetchTimeoutMs ?? 10000;
+  const allowUnverifiedGuildIds = options.allowUnverifiedGuildIds ?? false;
 
   if (!token) {
     throw new Error('No Discord token found.');
@@ -73,9 +90,22 @@ async function registerSlashCommands(client, commands, options = {}) {
 
   const rest = new REST({ version: '10' }).setToken(token);
   const configuredGuildIds = parseGuildIds(process.env.GUILD_IDS || process.env.GUILD_ID);
-  const guildIds = await getGuildIdsForRegistration(client, configuredGuildIds, retries, delayMs, guildFetchTimeoutMs);
+  const discoveredGuildIds = await getGuildIdsForRegistration(client, [], retries, delayMs, guildFetchTimeoutMs);
+  const guildIds = resolveGuildIdsForRegistration(configuredGuildIds, discoveredGuildIds, allowUnverifiedGuildIds);
 
-  console.log(`Registration setup: ${commandPayloads.length} commands, ${guildIds.length} guild target(s).`);
+  if (configuredGuildIds.length > 0 && discoveredGuildIds.length > 0 && !allowUnverifiedGuildIds) {
+    const skippedGuildIds = configuredGuildIds.filter((id) => !discoveredGuildIds.includes(id));
+    if (skippedGuildIds.length > 0) {
+      console.warn(
+        `Skipping configured guild IDs with no bot access: ${skippedGuildIds.join(', ')}. `
+        + 'Set ALLOW_UNVERIFIED_GUILD_IDS=true to force attempts anyway.'
+      );
+    }
+  }
+
+  console.log(
+    `Registration setup: ${commandPayloads.length} commands, ${guildIds.length} guild target(s), ${discoveredGuildIds.length} discovered guild(s).`
+  );
 
   if (guildIds.length > 0) {
     for (const guildId of guildIds) {
@@ -117,4 +147,10 @@ async function registerSlashCommands(client, commands, options = {}) {
   }
 }
 
-module.exports = { parseGuildIds, toCommandPayloads, shouldUseGuildScopedRegistration, registerSlashCommands };
+module.exports = {
+  parseGuildIds,
+  toCommandPayloads,
+  shouldUseGuildScopedRegistration,
+  resolveGuildIdsForRegistration,
+  registerSlashCommands,
+};

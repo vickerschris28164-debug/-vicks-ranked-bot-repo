@@ -511,6 +511,15 @@ db.serialize(() => {
 // Register slash commands
 client.once('clientReady', async () => {
   console.log(`Logged in as ${client.user.tag}!`);
+  console.log(`Application ID: ${client.application?.id || 'unknown'}`);
+
+  try {
+    await client.guilds.fetch();
+    const connectedGuildIds = Array.from(client.guilds.cache.keys());
+    console.log(`Connected guilds at startup: ${connectedGuildIds.length}${connectedGuildIds.length ? ` -> ${connectedGuildIds.join(', ')}` : ''}`);
+  } catch (err) {
+    console.error('Failed to fetch guilds during startup diagnostics:', err);
+  }
 
   // Do not block command registration on username API calls.
   client.user.setUsername('Hideout TCG Ranked Bot').catch(err => {
