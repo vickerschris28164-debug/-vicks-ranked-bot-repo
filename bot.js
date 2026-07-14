@@ -470,6 +470,13 @@ client.once('clientReady', async () => {
             { name: 'Leaderboard', value: 'leaderboard' },
             { name: 'Register', value: 'register' }
           )),
+    new SlashCommandBuilder()
+      .setName('xpcheck')
+      .setDescription('Check XP and level for a player')
+      .addUserOption(option =>
+        option.setName('player')
+          .setDescription('The player to check')
+          .setRequired(false)),
   ];
 
   slashCommands = commands;
@@ -1065,6 +1072,24 @@ client.on('interactionCreate', async interaction => {
         embed.setDescription(description);
       }
 
+      interaction.reply({ embeds: [embed] });
+    });
+  } else if (commandName === 'xpcheck') {
+    const player = interaction.options.getUser('player') || interaction.user;
+    getLevelInfo(player.id, interaction.guildId, (err, row) => {
+      if (err || !row) {
+        return interaction.reply(`No XP data found for ${player.username}.`);
+      }
+      const xpToNextLevel = Math.max(0, (row.level * 100) - row.xp);
+      const embed = new EmbedBuilder()
+        .setTitle(`📊 ${player.username}'s XP`)
+        .setColor(0x0099FF)
+        .addFields(
+          { name: 'Level', value: `${row.level}`, inline: true },
+          { name: 'Total XP', value: `${row.xp}`, inline: true },
+          { name: 'XP to Next Level', value: `${xpToNextLevel}`, inline: true }
+        )
+        .setThumbnail(player.displayAvatarURL());
       interaction.reply({ embeds: [embed] });
     });
   } else if (commandName === 'daily') {
