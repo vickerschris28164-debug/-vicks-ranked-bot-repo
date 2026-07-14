@@ -512,7 +512,8 @@ db.serialize(() => {
 client.once('clientReady', async () => {
   console.log(`Logged in as ${client.user.tag}!`);
 
-  await client.user.setUsername('Hideout TCG Ranked Bot').catch(err => {
+  // Do not block command registration on username API calls.
+  client.user.setUsername('Hideout TCG Ranked Bot').catch(err => {
     if (err.code === 20022) {
       console.log('Username change on cooldown. Try again later.');
     } else {
@@ -848,9 +849,11 @@ client.once('clientReady', async () => {
   ];
 
   slashCommands = commands;
+  console.log(`Preparing to register ${commands.length} slash commands...`);
 
   try {
     await registerSlashCommands(client, commands, { retries: 5, delayMs: 5000 });
+    console.log('registerSlashCommands() completed.');
   } catch (err) {
     console.error('Failed to register slash commands:', err);
   }
