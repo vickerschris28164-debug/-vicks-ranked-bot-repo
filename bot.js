@@ -488,6 +488,19 @@ client.once('clientReady', async () => {
             { name: 'Best of 1 (30 min)', value: 'bo1' },
             { name: 'Best of 3 (60 min)', value: 'bo3' }
           )),
+    new SlashCommandBuilder()
+      .setName('comments')
+      .setDescription('Post or view match comments')
+      .addSubcommand(sub =>
+        sub.setName('post')
+          .setDescription('Post a match comment')
+          .addStringOption(option =>
+            option.setName('message')
+              .setDescription('Your comment')
+              .setRequired(true)))
+      .addSubcommand(sub =>
+        sub.setName('view')
+          .setDescription('View recent match comments')),
   ];
 
   slashCommands = commands;
@@ -1423,6 +1436,31 @@ client.on('interactionCreate', async interaction => {
     }, 10000);
     
     setTimeout(() => clearInterval(updateInterval), durationMs + 5000);
+  } else if (commandName === 'comments') {
+    const subcommand = interaction.options.getSubcommand();
+    
+    if (subcommand === 'post') {
+      const message = interaction.options.getString('message');
+      const embed = new EmbedBuilder()
+        .setTitle('💬 Comment Posted')
+        .setColor(0x0099FF)
+        .setDescription(message)
+        .setAuthor({ name: interaction.user.username, iconURL: interaction.user.displayAvatarURL() })
+        .setTimestamp();
+      
+      const commentsChannel = interaction.guild.channels.cache.find(ch => ch.name === 'match-comments');
+      if (commentsChannel) {
+        commentsChannel.send({ embeds: [embed] }).catch(err => {
+          console.error('Error posting comment to match-comments:', err);
+          interaction.reply('Could not post comment to match-comments channel.');
+        });
+        interaction.reply('Your comment has been posted!');
+      } else {
+        interaction.reply('match-comments channel not found. Ask an admin to create it.');
+      }
+    } else if (subcommand === 'view') {
+      interaction.reply('Match comments feature coming soon!');
+    }
   }
 });
 
