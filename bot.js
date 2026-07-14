@@ -470,6 +470,13 @@ client.once('clientReady', async () => {
             { name: 'Leaderboard', value: 'leaderboard' },
             { name: 'Register', value: 'register' }
           )),
+    new SlashCommandBuilder()
+      .setName('xp-balance')
+      .setDescription('Check your current XP balance and progress to next milestone')
+      .addUserOption(option =>
+        option.setName('player')
+          .setDescription('The player to check')
+          .setRequired(false)),
   ];
 
   slashCommands = commands;
@@ -522,7 +529,7 @@ client.on('messageCreate', (message) => {
     if (result && result.crossedMilestone) {
       const lvlUpChannel = message.guild.channels.cache.get('1525991425995575457');
       if (lvlUpChannel) {
-        lvlUpChannel.send(`🔥 **${message.author.username}** is on fire! 🔥\n🎉 Just smashed through **${result.milestone} XP**! Keep the momentum going! 🚀`).catch(err2 => {
+        lvlUpChannel.send(`✨ **${message.author.username}** leveled up! ✨\n🎉 You've reached **${result.milestone} total XP**! Level: **${result.level}** 📈`).catch(err2 => {
           console.error('Error sending XP milestone announcement:', err2);
         });
       }
@@ -559,7 +566,7 @@ setInterval(() => {
         if (result && result.crossedMilestone) {
           const announceChannel = guild.channels.cache.get('1525991425995575457');
           if (announceChannel) {
-            announceChannel.send(`🔥 **${member.user.username}** is on fire! 🔥\n🎉 Just smashed through **${result.milestone} XP**! Keep grinding in voice! 🚀`).catch(err2 => {
+            announceChannel.send(`✨ **${member.user.username}** leveled up! ✨\n🎉 You've reached **${result.milestone} total XP**! Level: **${result.level}** 📈`).catch(err2 => {
               console.error('Error sending XP milestone announcement:', err2);
             });
           }
@@ -1353,6 +1360,27 @@ client.on('interactionCreate', async interaction => {
       if (err) return interaction.reply('Error fetching coins');
       const coins = row?.coins || 0;
       const embed = new EmbedBuilder().setTitle(`💵 ${player.username}'s Coin Balance`).setColor('#FFD700').setDescription(`**${coins}** coins`);
+      interaction.reply({ embeds: [embed] });
+    });
+  } else if (commandName === 'xp-balance') {
+    const player = interaction.options.getUser('player') || interaction.user;
+    getLevelInfo(player.id, interaction.guildId, (err, row) => {
+      if (err || !row) {
+        return interaction.reply(`No XP data found for ${player.username}.`);
+      }
+      const currentMilestone = Math.floor(row.xp / 50) * 50;
+      const nextMilestone = currentMilestone + 50;
+      const xpToNextMilestone = nextMilestone - row.xp;
+      
+      const embed = new EmbedBuilder()
+        .setTitle(`💰 ${player.username}'s XP Balance`)
+        .setColor(0x00FF00)
+        .addFields(
+          { name: 'Current XP', value: `${row.xp}`, inline: true },
+          { name: 'Next Milestone', value: `${nextMilestone} XP`, inline: true },
+          { name: 'XP to Milestone', value: `${xpToNextMilestone} XP`, inline: true }
+        )
+        .setThumbnail(player.displayAvatarURL());
       interaction.reply({ embeds: [embed] });
     });
   }
