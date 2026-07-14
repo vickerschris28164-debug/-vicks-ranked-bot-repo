@@ -47,6 +47,8 @@ const DEFAULT_COSMETICS = [
 
 const activeBlackjackGames = new Map();
 const BLACKJACK_TIMEOUT_MS = 2 * 60 * 1000;
+const POLL_MAX_OPTIONS = 10;
+const POLL_CLOSE_CHECK_MS = 15 * 1000;
 
 function drawBlackjackCard() {
   return Math.ceil(Math.random() * 13);
@@ -241,6 +243,142 @@ function scheduleBlackjackTimeout(game) {
   game.timeoutId = setTimeout(() => {
     autoStandBlackjackGame(game.gameKey);
   }, BLACKJACK_TIMEOUT_MS);
+}
+
+function parsePollOptions(rawOptions) {
+  if (!rawOptions) return [];
+
+  const options = rawOptions
+    .split('|')
+    .map(option => option.trim())
+    .filter(option => option.length > 0);
+
+  return [...new Set(options)].slice(0, POLL_MAX_OPTIONS);
+}
+
+function getPollButtons(pollId, options, disabled = false) {
+  const rows = [];
+  for (let i = 0; i < options.length; i += 5) {
+    const row = new ActionRowBuilder();
+    const chunk = options.slice(i, i + 5);
+    chunk.forEach((option, chunkIndex) => {
+      const optionIndex = i + chunkIndex;
+      const label = `${optionIndex + 1}. ${option}`.slice(0, 80);
+      row.addComponents(
+        new ButtonBuilder()
+          .setCustomId(`poll_vote:${pollId}:${optionIndex}`)
+          .setLabel(label)
+          .setStyle(ButtonStyle.Secondary)
+          .setDisabled(disabled)
+      );
+    });
+    rows.push(row);
+  }
+  return rows;
+}
+
+function getPollVoteCounts(pollId, callback) {
+  db.all(
+    'SELECT option_index, COUNT(*) AS vote_count FROM poll_votes WHERE poll_id = ? GROUP BY option_index',
+    [pollId],
+    (err, rows) => {
+      if (err) return callback(err);
+      const voteCounts = {};
+      (rows || []).forEach((row) => {
+        voteCounts[row.option_index] = row.vote_count;
+      });
+      callback(null, voteCounts);
+    }
+  );
+}
+
+function buildPollEmbed(poll, voteCounts = {}, options = {}) {
+  const pollOptions = JSON.parse(poll.options_json || '[]');
+  const totalVotes = Object.values(voteCounts).reduce((sum, count) => sum + count, 0);
+  const isClosed = options.isClosed ?? Boolean(poll.is_closed);
+  const statusText = options.statusText || (isClosed ? 'Poll closed.' : 'Click a button below to vote.');
+
+  const lines = pollOptions.map((pollOption, index) => {
+    const count = voteCounts[index] || 0;
+    const percent = totalVotes > 0 ? Math.round((count / totalVotes) * 100) : 0;
+    return `**${index + 1}. ${pollOption}** - ${count} vote${count === 1 ? '' : 's'} (${percent}%)`;
+  });
+
+  const embed = new EmbedBuilder()
+    .setTitle(`📊 Poll #${poll.id}`)
+    .setColor(isClosed ? '#808080' : '#0099FF')
+    .setDescription(`**${poll.question}**\n\n${lines.join('\n')}\n\n${statusText}`)
+    .setFooter({ text: `Total votes: ${totalVotes}` });
+
+  if (!isClosed && poll.ends_at) {
+    embed.addFields({ name: 'Ends', value: `<t:${Math.floor(Number(poll.ends_at) / 1000)}:R>`, inline: true });
+  }
+
+  return embed;
+}
+
+function editPollMessage(poll, payload) {
+  if (!poll?.channel_id || !poll?.message_id) return;
+
+  client.channels.fetch(poll.channel_id)
+    .then((channel) => {
+      if (!channel?.isTextBased()) return;
+      channel.messages.fetch(poll.message_id)
+        .then((message) => message.edit(payload))
+        .catch((err) => {
+          console.error('Poll message fetch/edit error:', err);
+        });
+    })
+    .catch((err) => {
+      console.error('Poll channel fetch error:', err);
+    });
+}
+
+function refreshPollMessage(pollId) {
+  db.get('SELECT * FROM polls WHERE id = ?', [pollId], (pollErr, poll) => {
+    if (pollErr || !poll) return;
+
+    const pollOptions = JSON.parse(poll.options_json || '[]');
+    getPollVoteCounts(pollId, (countErr, voteCounts) => {
+      if (countErr) {
+        return console.error('Poll vote count error:', countErr);
+      }
+
+      const isClosed = Boolean(poll.is_closed) || Date.now() >= Number(poll.ends_at);
+      const embed = buildPollEmbed(poll, voteCounts, { isClosed });
+      editPollMessage(poll, { embeds: [embed], components: getPollButtons(pollId, pollOptions, isClosed) });
+    });
+  });
+}
+
+function closePollById(pollId, reason = 'ended', callback = () => {}) {
+  db.get('SELECT * FROM polls WHERE id = ? AND is_closed = 0', [pollId], (pollErr, poll) => {
+    if (pollErr) return callback(pollErr);
+    if (!poll) return callback(null, false);
+
+    db.run('UPDATE polls SET is_closed = 1 WHERE id = ?', [pollId], (updateErr) => {
+      if (updateErr) return callback(updateErr);
+
+      const pollOptions = JSON.parse(poll.options_json || '[]');
+      getPollVoteCounts(pollId, (countErr, voteCounts) => {
+        if (countErr) return callback(countErr);
+
+        const statusText = reason === 'manual'
+          ? 'Poll closed by a moderator.'
+          : reason === 'expired'
+            ? 'Poll duration ended.'
+            : 'Poll closed.';
+
+        const embed = buildPollEmbed({ ...poll, is_closed: 1 }, voteCounts, {
+          isClosed: true,
+          statusText,
+        });
+
+        editPollMessage(poll, { embeds: [embed], components: getPollButtons(pollId, pollOptions, true) });
+        callback(null, true);
+      });
+    });
+  });
 }
 
 function getCurrentMonth() {
@@ -449,6 +587,29 @@ db.serialize(() => {
     is_equipped INTEGER DEFAULT 0,
     UNIQUE(guild_id, user_id, cosmetic_id),
     FOREIGN KEY (cosmetic_id) REFERENCES cosmetics_shop(id)
+  )`);
+
+  db.run(`CREATE TABLE IF NOT EXISTS polls (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    guild_id TEXT NOT NULL,
+    channel_id TEXT NOT NULL,
+    message_id TEXT,
+    question TEXT NOT NULL,
+    options_json TEXT NOT NULL,
+    created_by TEXT NOT NULL,
+    anonymous INTEGER DEFAULT 0,
+    ends_at INTEGER NOT NULL,
+    is_closed INTEGER DEFAULT 0,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+  )`);
+
+  db.run(`CREATE TABLE IF NOT EXISTS poll_votes (
+    poll_id INTEGER NOT NULL,
+    user_id TEXT NOT NULL,
+    option_index INTEGER NOT NULL,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (poll_id, user_id),
+    FOREIGN KEY (poll_id) REFERENCES polls(id)
   )`);
 
   db.all(`PRAGMA table_info(cosmetics_shop)`, (tableErr, rows = []) => {
@@ -706,6 +867,47 @@ client.once('clientReady', async () => {
           .setDescription('Bet amount')
           .setRequired(true)),
     new SlashCommandBuilder()
+      .setName('poll')
+      .setDescription('Create and manage polls')
+      .addSubcommand(subcommand =>
+        subcommand
+          .setName('create')
+          .setDescription('Create a poll with up to 10 options')
+          .addStringOption(option =>
+            option.setName('question')
+              .setDescription('Poll question')
+              .setRequired(true))
+          .addStringOption(option =>
+            option.setName('options')
+              .setDescription('Options separated by | (example: Option A | Option B)')
+              .setRequired(true))
+          .addIntegerOption(option =>
+            option.setName('duration_minutes')
+              .setDescription('How long the poll should stay open')
+              .setRequired(true)
+              .setMinValue(1)
+              .setMaxValue(10080))
+          .addBooleanOption(option =>
+            option.setName('anonymous')
+              .setDescription('Hide voter identities (results still show totals)')
+              .setRequired(false)))
+      .addSubcommand(subcommand =>
+        subcommand
+          .setName('results')
+          .setDescription('View current or final poll results')
+          .addIntegerOption(option =>
+            option.setName('poll_id')
+              .setDescription('Poll ID')
+              .setRequired(true)))
+      .addSubcommand(subcommand =>
+        subcommand
+          .setName('end')
+          .setDescription('Close a poll early')
+          .addIntegerOption(option =>
+            option.setName('poll_id')
+              .setDescription('Poll ID')
+              .setRequired(true))),
+    new SlashCommandBuilder()
       .setName('shop')
       .setDescription('Browse or buy XP cosmetics')
       .addSubcommand(subcommand =>
@@ -917,6 +1119,48 @@ setInterval(() => {
 
 client.on('interactionCreate', async interaction => {
   if (interaction.isButton()) {
+    if (interaction.customId.startsWith('poll_vote:')) {
+      const [, pollIdRaw, optionIndexRaw] = interaction.customId.split(':');
+      const pollId = Number.parseInt(pollIdRaw, 10);
+      const optionIndex = Number.parseInt(optionIndexRaw, 10);
+
+      if (!Number.isInteger(pollId) || !Number.isInteger(optionIndex)) {
+        return interaction.reply({ content: 'Invalid poll vote payload.', ephemeral: true });
+      }
+
+      await interaction.deferUpdate();
+
+      db.get('SELECT * FROM polls WHERE id = ?', [pollId], (pollErr, poll) => {
+        if (pollErr || !poll) {
+          if (pollErr) console.error('Poll vote lookup error:', pollErr);
+          return;
+        }
+
+        const pollOptions = JSON.parse(poll.options_json || '[]');
+        if (optionIndex < 0 || optionIndex >= pollOptions.length) {
+          return;
+        }
+
+        if (Boolean(poll.is_closed) || Date.now() >= Number(poll.ends_at)) {
+          closePollById(pollId, 'expired');
+          return;
+        }
+
+        db.run(
+          'INSERT OR REPLACE INTO poll_votes (poll_id, user_id, option_index, updated_at) VALUES (?, ?, ?, CURRENT_TIMESTAMP)',
+          [pollId, interaction.user.id, optionIndex],
+          (voteErr) => {
+            if (voteErr) {
+              return console.error('Poll vote save error:', voteErr);
+            }
+
+            refreshPollMessage(pollId);
+          }
+        );
+      });
+      return;
+    }
+
     if (!interaction.customId.startsWith('blackjack_')) return;
 
     const [action, ...gameKeyParts] = interaction.customId.split(':');
@@ -1234,6 +1478,9 @@ client.on('interactionCreate', async interaction => {
         { name: '/coinflip amount:integer choice:heads|tails', value: 'Bet your coins on a coin flip.', inline: false },
         { name: '/slots amount:integer', value: 'Play the slot machine for coins.', inline: false },
         { name: '/blackjack amount:integer', value: 'Play interactive blackjack with Hit/Stand (auto-stands after 2 min idle).', inline: false },
+        { name: '/poll create question:text options:text duration_minutes:number [anonymous:boolean]', value: 'Create a poll. Options are separated by `|`.', inline: false },
+        { name: '/poll results poll_id:number', value: 'View current or final poll results.', inline: false },
+        { name: '/poll end poll_id:number', value: 'Close a poll early (creator or admin).', inline: false },
         { name: '/history_list [ladder]', value: 'View all months with leaderboard data.', inline: false },
         { name: '/history month:YYYY-MM [ladder]', value: 'View leaderboard for a specific month.', inline: false },
         { name: '/player_history [player] [ladder]', value: 'View a player\'s stats across all months.', inline: false },
@@ -1686,6 +1933,124 @@ client.on('interactionCreate', async interaction => {
         });
     });
 
+    } else if (commandName === 'poll') {
+      const subcommand = interaction.options.getSubcommand();
+      const guildId = interaction.guild.id;
+      const channelId = interaction.channelId;
+      const userId = interaction.user.id;
+
+      if (subcommand === 'create') {
+        const question = interaction.options.getString('question');
+        const rawOptions = interaction.options.getString('options');
+        const durationMinutes = interaction.options.getInteger('duration_minutes');
+        const anonymous = interaction.options.getBoolean('anonymous') ? 1 : 0;
+
+        const pollOptions = parsePollOptions(rawOptions);
+        if (pollOptions.length < 2) {
+          return interaction.reply('Please provide at least 2 poll options separated by `|` (example: Yes | No).');
+        }
+
+        const endsAt = Date.now() + (durationMinutes * 60 * 1000);
+
+        db.run(
+          `INSERT INTO polls (guild_id, channel_id, message_id, question, options_json, created_by, anonymous, ends_at, is_closed)
+           VALUES (?, ?, '', ?, ?, ?, ?, ?, 0)`,
+          [guildId, channelId, question, JSON.stringify(pollOptions), userId, anonymous, endsAt],
+          function(err) {
+            if (err) {
+              console.error('Poll create insert error:', err);
+              return interaction.reply('Error creating poll.');
+            }
+
+            const pollId = this.lastID;
+            const poll = {
+              id: pollId,
+              question,
+              options_json: JSON.stringify(pollOptions),
+              ends_at: endsAt,
+              is_closed: 0,
+            };
+
+            const embed = buildPollEmbed(poll, {}, {
+              isClosed: false,
+              statusText: anonymous
+                ? 'Anonymous poll is live. Click a button below to vote.'
+                : 'Poll is live. Click a button below to vote.',
+            });
+
+            interaction.reply({ embeds: [embed], components: getPollButtons(pollId, pollOptions), fetchReply: true })
+              .then((message) => {
+                db.run('UPDATE polls SET message_id = ? WHERE id = ?', [message.id, pollId], (updateErr) => {
+                  if (updateErr) {
+                    console.error('Poll message id update error:', updateErr);
+                  }
+                });
+              })
+              .catch((replyErr) => {
+                console.error('Poll create reply error:', replyErr);
+              });
+          }
+        );
+      } else if (subcommand === 'results') {
+        const pollId = interaction.options.getInteger('poll_id');
+
+        db.get('SELECT * FROM polls WHERE id = ? AND guild_id = ?', [pollId, guildId], (pollErr, poll) => {
+          if (pollErr) {
+            console.error('Poll results lookup error:', pollErr);
+            return interaction.reply('Error loading poll results.');
+          }
+          if (!poll) {
+            return interaction.reply('Poll not found in this server.');
+          }
+
+          getPollVoteCounts(pollId, (countErr, voteCounts) => {
+            if (countErr) {
+              console.error('Poll results count error:', countErr);
+              return interaction.reply('Error loading poll results.');
+            }
+
+            const isClosed = Boolean(poll.is_closed) || Date.now() >= Number(poll.ends_at);
+            const embed = buildPollEmbed(poll, voteCounts, {
+              isClosed,
+              statusText: isClosed ? 'Final results.' : 'Current live results.',
+            });
+
+            interaction.reply({ embeds: [embed], ephemeral: true });
+          });
+        });
+      } else if (subcommand === 'end') {
+        const pollId = interaction.options.getInteger('poll_id');
+
+        db.get('SELECT id, created_by, is_closed FROM polls WHERE id = ? AND guild_id = ?', [pollId, guildId], (pollErr, poll) => {
+          if (pollErr) {
+            console.error('Poll end lookup error:', pollErr);
+            return interaction.reply('Error loading poll.');
+          }
+          if (!poll) {
+            return interaction.reply('Poll not found in this server.');
+          }
+          if (Boolean(poll.is_closed)) {
+            return interaction.reply('This poll is already closed.');
+          }
+
+          const isAdmin = interaction.member.permissions.has('Administrator');
+          if (poll.created_by !== userId && !isAdmin) {
+            return interaction.reply('Only the poll creator or an admin can end this poll.');
+          }
+
+          closePollById(pollId, 'manual', (closeErr, closed) => {
+            if (closeErr) {
+              console.error('Poll close error:', closeErr);
+              return interaction.reply('Error closing poll.');
+            }
+            if (!closed) {
+              return interaction.reply('Poll is already closed.');
+            }
+            interaction.reply(`✅ Poll #${pollId} has been closed.`);
+          });
+        });
+      }
+
   } else if (commandName === 'bump') {
     const userId = interaction.user.id;
     const now = Date.now();
@@ -1956,6 +2321,19 @@ client.on('interactionCreate', async interaction => {
 cron.schedule('0 0 1 * *', () => {
   console.log('New monthly leaderboard cycle started:', getCurrentMonth());
 });
+
+setInterval(() => {
+  const now = Date.now();
+  db.all('SELECT id FROM polls WHERE is_closed = 0 AND ends_at <= ?', [now], (err, rows) => {
+    if (err) {
+      return console.error('Poll auto-close query error:', err);
+    }
+
+    (rows || []).forEach((row) => {
+      closePollById(row.id, 'expired');
+    });
+  });
+}, POLL_CLOSE_CHECK_MS);
 
 cron.schedule('0 */2 * * *', () => {
   const guilds = client.guilds.cache;
