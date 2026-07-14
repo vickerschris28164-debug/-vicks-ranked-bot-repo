@@ -850,14 +850,28 @@ client.once('clientReady', async () => {
 
   slashCommands = commands;
   console.log(`Preparing to register ${commands.length} slash commands...`);
+  console.log('Starting registerSlashCommands()...');
 
   try {
-    await registerSlashCommands(client, commands, { retries: 5, delayMs: 5000 });
+    await Promise.race([
+      registerSlashCommands(client, commands, {
+        retries: 5,
+        delayMs: 5000,
+        requestTimeoutMs: 15000,
+        guildFetchTimeoutMs: 10000,
+      }),
+      new Promise((_, reject) => {
+        setTimeout(() => {
+          reject(new Error('registerSlashCommands startup timeout after 45000ms'));
+        }, 45000);
+      }),
+    ]);
     console.log('registerSlashCommands() completed.');
   } catch (err) {
     console.error('Failed to register slash commands:', err);
   }
 
+  console.log('Starting direct guild command sync...');
   await syncSlashCommandsToCurrentGuilds(commands, 'clientReady');
 
   // Retry once shortly after startup to handle Discord cache/propagation timing.
