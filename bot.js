@@ -477,6 +477,17 @@ client.once('clientReady', async () => {
         option.setName('player')
           .setDescription('The player to check')
           .setRequired(false)),
+    new SlashCommandBuilder()
+      .setName('timer')
+      .setDescription('Start a match timer')
+      .addStringOption(option =>
+        option.setName('match_type')
+          .setDescription('Match type')
+          .setRequired(true)
+          .addChoices(
+            { name: 'Best of 1 (30 min)', value: 'bo1' },
+            { name: 'Best of 3 (60 min)', value: 'bo3' }
+          )),
   ];
 
   slashCommands = commands;
@@ -1383,6 +1394,35 @@ client.on('interactionCreate', async interaction => {
         .setThumbnail(player.displayAvatarURL());
       interaction.reply({ embeds: [embed] });
     });
+  } else if (commandName === 'timer') {
+    const matchType = interaction.options.getString('match_type');
+    const duration = matchType === 'bo3' ? 60 : 30;
+    const durationMs = duration * 60 * 1000;
+    const startTime = Date.now();
+    const endTime = startTime + durationMs;
+    
+    const msg = await interaction.reply({ 
+      content: `⏱️ **${getLadderDisplayName(matchType)} Match Timer** - ${duration}min\nStarted at <t:${Math.floor(startTime / 1000)}:t>`, 
+      fetchReply: true 
+    });
+    
+    const updateInterval = setInterval(() => {
+      const now = Date.now();
+      const remaining = Math.max(0, endTime - now);
+      const minutes = Math.floor(remaining / 60000);
+      const seconds = Math.floor((remaining % 60000) / 1000);
+      
+      if (remaining <= 0) {
+        clearInterval(updateInterval);
+        msg.edit(`✅ **Match Complete!** Time's up!`).catch(err => console.error('Timer completion update error:', err));
+      } else if (remaining <= 5 * 60 * 1000 && remaining > 4 * 60 * 1000) {
+        msg.edit(`⚠️ **5 minutes remaining!**`).catch(err => console.error('Timer warning update error:', err));
+      } else {
+        msg.edit(`⏱️ **${getLadderDisplayName(matchType)} Match Timer**\n${minutes}m ${seconds}s remaining`).catch(err => console.error('Timer update error:', err));
+      }
+    }, 10000);
+    
+    setTimeout(() => clearInterval(updateInterval), durationMs + 5000);
   }
 });
 
