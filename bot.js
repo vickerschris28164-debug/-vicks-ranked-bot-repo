@@ -522,7 +522,7 @@ client.on('messageCreate', (message) => {
     if (result && result.crossedMilestone) {
       const lvlUpChannel = message.guild.channels.cache.get('1525991425995575457');
       if (lvlUpChannel) {
-        lvlUpChannel.send(`🔥 **${message.author.username}** is on fire! 🔥\n🎉 Just smashed through **${result.milestone} XP**! Keep the momentum going! 🚀`).catch(err2 => {
+        lvlUpChannel.send(`✨ **${message.author.username}** leveled up! ✨\n🎉 You've reached **${result.milestone} total XP**! Level: **${result.level}** 📈`).catch(err2 => {
           console.error('Error sending XP milestone announcement:', err2);
         });
       }
@@ -559,7 +559,7 @@ setInterval(() => {
         if (result && result.crossedMilestone) {
           const announceChannel = guild.channels.cache.get('1525991425995575457');
           if (announceChannel) {
-            announceChannel.send(`🔥 **${member.user.username}** is on fire! 🔥\n🎉 Just smashed through **${result.milestone} XP**! Keep grinding in voice! 🚀`).catch(err2 => {
+            announceChannel.send(`✨ **${member.user.username}** leveled up! ✨\n🎉 You've reached **${result.milestone} total XP**! Level: **${result.level}** 📈`).catch(err2 => {
               console.error('Error sending XP milestone announcement:', err2);
             });
           }
