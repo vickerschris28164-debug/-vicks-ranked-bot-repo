@@ -923,7 +923,29 @@ client.on('interactionCreate', async interaction => {
     const game = activeBlackjackGames.get(gameKey);
 
     if (!game) {
-      return interaction.reply({ content: 'This blackjack hand is no longer active.', ephemeral: true });
+      try {
+        let expiredEmbed;
+        if (interaction.message?.embeds?.length) {
+          expiredEmbed = EmbedBuilder.from(interaction.message.embeds[0])
+            .setDescription('⏱️ This blackjack hand expired or the bot restarted. Start a new hand with `/blackjack`.');
+        } else {
+          expiredEmbed = new EmbedBuilder()
+            .setTitle('🃏 Blackjack')
+            .setColor('#808080')
+            .setDescription('⏱️ This blackjack hand expired or the bot restarted. Start a new hand with `/blackjack`.');
+        }
+
+        await interaction.update({
+          embeds: [expiredEmbed],
+          components: getBlackjackButtons(gameKey, true),
+        });
+      } catch (err) {
+        console.error('Blackjack stale-hand update error:', err);
+        if (!interaction.replied && !interaction.deferred) {
+          await interaction.reply({ content: 'This blackjack hand is no longer active. Start a new one with `/blackjack`.', ephemeral: true });
+        }
+      }
+      return;
     }
 
     if (interaction.user.id !== game.userId || interaction.guildId !== game.guildId) {
