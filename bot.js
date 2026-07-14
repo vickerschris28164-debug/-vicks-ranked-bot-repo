@@ -866,13 +866,13 @@ client.once('clientReady', async () => {
       registerSlashCommands(client, commands, {
         retries: 5,
         delayMs: 5000,
-        requestTimeoutMs: 15000,
+        requestTimeoutMs: 10000,
         guildFetchTimeoutMs: 10000,
       }),
       new Promise((_, reject) => {
         setTimeout(() => {
-          reject(new Error('registerSlashCommands startup timeout after 45000ms'));
-        }, 45000);
+          reject(new Error('registerSlashCommands startup timeout after 30000ms'));
+        }, 30000);
       }),
     ]);
     console.log('registerSlashCommands() completed.');
