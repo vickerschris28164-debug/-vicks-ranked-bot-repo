@@ -509,7 +509,7 @@ db.serialize(() => {
 });
 
 // Register slash commands
-client.once('ready', async () => {
+client.once('clientReady', async () => {
   console.log(`Logged in as ${client.user.tag}!`);
 
   // Do not block command registration on username API calls.
