@@ -1,14 +1,24 @@
 const { REST, Routes } = require('discord.js');
 
-function withTimeout(promise, timeoutMs, label) {
+function withTimeout(promise, timeoutMs, label, controller) {
+  let timeoutHandle;
+
   return Promise.race([
     promise,
     new Promise((_, reject) => {
-      setTimeout(() => {
+      timeoutHandle = setTimeout(() => {
+        if (controller) {
+          // Actually cancel the in-flight HTTP request instead of letting it
+          // continue in the background after we've stopped waiting on it.
+          controller.abort();
+        }
+        console.error(`${label} timed out after ${timeoutMs}ms${controller ? ' - request aborted' : ''}`);
         reject(new Error(`${label} timed out after ${timeoutMs}ms`));
       }, timeoutMs);
     }),
-  ]);
+  ]).finally(() => {
+    clearTimeout(timeoutHandle);
+  });
 }
 
 function parseGuildIds(value) {
@@ -109,14 +119,17 @@ async function registerSlashCommands(client, commands, options = {}) {
 
   if (guildIds.length > 0) {
     for (const guildId of guildIds) {
+      const guildAbortController = new AbortController();
       try {
         console.log(`Registering guild slash commands for ${guildId}...`);
         await withTimeout(
           rest.put(Routes.applicationGuildCommands(client.user.id, guildId), {
             body: commandPayloads,
+            signal: guildAbortController.signal,
           }),
           requestTimeoutMs,
-          `Register guild commands ${guildId}`
+          `Register guild commands ${guildId}`,
+          guildAbortController
         );
         console.log(`Registered ${commandPayloads.length} slash commands for guild ${guildId}`);
       } catch (err) {
@@ -127,14 +140,17 @@ async function registerSlashCommands(client, commands, options = {}) {
     console.log('No guilds available for command registration yet. Set GUILD_ID or GUILD_IDS in your environment to register commands immediately in a specific server.');
   }
 
+  const globalAbortController = new AbortController();
   try {
     console.log('Registering global slash commands...');
     await withTimeout(
       rest.put(Routes.applicationCommands(client.user.id), {
         body: commandPayloads,
+        signal: globalAbortController.signal,
       }),
       requestTimeoutMs,
-      'Register global commands'
+      'Register global commands',
+      globalAbortController
     );
     console.log('Global slash commands registered.');
   } catch (err) {
