@@ -22,9 +22,7 @@ function shouldUseGuildScopedRegistration(configuredGuildIds, resolvedGuildIds) 
 }
 
 async function getGuildIdsForRegistration(client, configuredGuildIds, retries = 5, delayMs = 5000) {
-  if (configuredGuildIds.length > 0) {
-    return configuredGuildIds;
-  }
+  const discoveredGuildIds = new Set(configuredGuildIds);
 
   for (let attempt = 1; attempt <= retries; attempt += 1) {
     if (typeof client?.guilds?.fetch === 'function') {
@@ -36,8 +34,10 @@ async function getGuildIdsForRegistration(client, configuredGuildIds, retries = 
     }
 
     const guildIds = Array.from(client?.guilds?.cache?.values?.() || []).map((guild) => guild.id);
-    if (guildIds.length > 0) {
-      return guildIds;
+    guildIds.forEach((guildId) => discoveredGuildIds.add(guildId));
+
+    if (discoveredGuildIds.size > 0) {
+      return Array.from(discoveredGuildIds);
     }
 
     if (attempt < retries) {
@@ -61,7 +61,6 @@ async function registerSlashCommands(client, commands, options = {}) {
   const rest = new REST({ version: '10' }).setToken(token);
   const configuredGuildIds = parseGuildIds(process.env.GUILD_IDS || process.env.GUILD_ID);
   const guildIds = await getGuildIdsForRegistration(client, configuredGuildIds, retries, delayMs);
-  let successfulGuildRegistrations = 0;
 
   if (guildIds.length > 0) {
     for (const guildId of guildIds) {
@@ -72,7 +71,6 @@ async function registerSlashCommands(client, commands, options = {}) {
         await rest.put(Routes.applicationGuildCommands(client.user.id, guildId), {
           body: commandPayloads,
         });
-        successfulGuildRegistrations += 1;
         console.log(`Registered ${commandPayloads.length} slash commands for guild ${guildId}`);
       } catch (err) {
         console.error(`Failed to register slash commands for guild ${guildId}:`, err);
@@ -82,32 +80,13 @@ async function registerSlashCommands(client, commands, options = {}) {
     console.log('No guilds available for command registration yet. Set GUILD_ID or GUILD_IDS in your environment to register commands immediately in a specific server.');
   }
 
-  const shouldUseGlobalRegistration =
-    !shouldUseGuildScopedRegistration(configuredGuildIds, guildIds) ||
-    successfulGuildRegistrations === 0;
-
-  if (shouldUseGlobalRegistration) {
-    try {
-      await rest.put(Routes.applicationCommands(client.user.id), {
-        body: commandPayloads,
-      });
-      if (successfulGuildRegistrations === 0 && guildIds.length > 0) {
-        console.log('Fell back to global slash command registration because guild registration did not succeed.');
-      } else {
-        console.log('Global slash commands registered.');
-      }
-    } catch (err) {
-      console.error('Failed to register global slash commands:', err);
-    }
-  } else {
-    try {
-      await rest.put(Routes.applicationCommands(client.user.id), {
-        body: [],
-      });
-      console.log('Cleared legacy global slash commands to avoid duplicate entries.');
-    } catch (err) {
-      console.error('Failed to clear legacy global slash commands:', err);
-    }
+  try {
+    await rest.put(Routes.applicationCommands(client.user.id), {
+      body: commandPayloads,
+    });
+    console.log('Global slash commands registered.');
+  } catch (err) {
+    console.error('Failed to register global slash commands:', err);
   }
 }
 
