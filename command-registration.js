@@ -1,5 +1,16 @@
 const { REST, Routes } = require('discord.js');
 
+function withTimeout(promise, timeoutMs, label) {
+  return Promise.race([
+    promise,
+    new Promise((_, reject) => {
+      setTimeout(() => {
+        reject(new Error(`${label} timed out after ${timeoutMs}ms`));
+      }, timeoutMs);
+    }),
+  ]);
+}
+
 function parseGuildIds(value) {
   if (!value) return [];
   return String(value)
@@ -21,13 +32,13 @@ function shouldUseGuildScopedRegistration(configuredGuildIds, resolvedGuildIds) 
   return configuredGuildIds.length > 0 || resolvedGuildIds.length > 0;
 }
 
-async function getGuildIdsForRegistration(client, configuredGuildIds, retries = 5, delayMs = 5000) {
+async function getGuildIdsForRegistration(client, configuredGuildIds, retries = 5, delayMs = 5000, timeoutMs = 10000) {
   const discoveredGuildIds = new Set(configuredGuildIds);
 
   for (let attempt = 1; attempt <= retries; attempt += 1) {
     if (typeof client?.guilds?.fetch === 'function') {
       try {
-        await client.guilds.fetch();
+        await withTimeout(client.guilds.fetch(), timeoutMs, `Guild fetch attempt ${attempt}`);
       } catch (err) {
         console.warn(`Guild fetch attempt ${attempt} failed:`, err.message || err);
       }
@@ -53,6 +64,8 @@ async function registerSlashCommands(client, commands, options = {}) {
   const token = process.env.DISCORD_TOKEN || process.env.BOT_TOKEN || process.env.TOKEN;
   const retries = options.retries ?? 5;
   const delayMs = options.delayMs ?? 5000;
+  const requestTimeoutMs = options.requestTimeoutMs ?? 15000;
+  const guildFetchTimeoutMs = options.guildFetchTimeoutMs ?? 10000;
 
   if (!token) {
     throw new Error('No Discord token found.');
@@ -60,17 +73,27 @@ async function registerSlashCommands(client, commands, options = {}) {
 
   const rest = new REST({ version: '10' }).setToken(token);
   const configuredGuildIds = parseGuildIds(process.env.GUILD_IDS || process.env.GUILD_ID);
-  const guildIds = await getGuildIdsForRegistration(client, configuredGuildIds, retries, delayMs);
+  const guildIds = await getGuildIdsForRegistration(client, configuredGuildIds, retries, delayMs, guildFetchTimeoutMs);
+
+  console.log(`Registration setup: ${commandPayloads.length} commands, ${guildIds.length} guild target(s).`);
 
   if (guildIds.length > 0) {
     for (const guildId of guildIds) {
       try {
-        await rest.put(Routes.applicationGuildCommands(client.user.id, guildId), {
-          body: [],
-        });
-        await rest.put(Routes.applicationGuildCommands(client.user.id, guildId), {
-          body: commandPayloads,
-        });
+        await withTimeout(
+          rest.put(Routes.applicationGuildCommands(client.user.id, guildId), {
+            body: [],
+          }),
+          requestTimeoutMs,
+          `Clear guild commands ${guildId}`
+        );
+        await withTimeout(
+          rest.put(Routes.applicationGuildCommands(client.user.id, guildId), {
+            body: commandPayloads,
+          }),
+          requestTimeoutMs,
+          `Register guild commands ${guildId}`
+        );
         console.log(`Registered ${commandPayloads.length} slash commands for guild ${guildId}`);
       } catch (err) {
         console.error(`Failed to register slash commands for guild ${guildId}:`, err);
@@ -81,9 +104,13 @@ async function registerSlashCommands(client, commands, options = {}) {
   }
 
   try {
-    await rest.put(Routes.applicationCommands(client.user.id), {
-      body: commandPayloads,
-    });
+    await withTimeout(
+      rest.put(Routes.applicationCommands(client.user.id), {
+        body: commandPayloads,
+      }),
+      requestTimeoutMs,
+      'Register global commands'
+    );
     console.log('Global slash commands registered.');
   } catch (err) {
     console.error('Failed to register global slash commands:', err);
