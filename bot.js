@@ -299,6 +299,35 @@ function getLevelInfo(userId, guildId, callback) {
   db.get(`SELECT name, xp, level FROM user_levels WHERE guild_id = ? AND user_id = ?`, [guildId, userId], callback);
 }
 
+async function syncSlashCommandsToCurrentGuilds(commands, reason = 'startup') {
+  if (!commands || commands.length === 0) return;
+
+  try {
+    if (typeof client?.guilds?.fetch === 'function') {
+      await client.guilds.fetch();
+    }
+
+    const payloads = commands.map((command) => command.toJSON());
+    const guilds = Array.from(client.guilds.cache.values());
+
+    if (guilds.length === 0) {
+      console.log(`No guilds available for direct command sync during ${reason}.`);
+      return;
+    }
+
+    for (const guild of guilds) {
+      try {
+        await guild.commands.set(payloads);
+        console.log(`Directly synced ${payloads.length} commands for guild ${guild.id} during ${reason}.`);
+      } catch (err) {
+        console.error(`Direct command sync failed for guild ${guild.id} during ${reason}:`, err);
+      }
+    }
+  } catch (err) {
+    console.error(`Direct command sync setup failed during ${reason}:`, err);
+  }
+}
+
 // Initialize database
 db.serialize(() => {
   db.get(`SELECT name FROM sqlite_master WHERE type='table' AND name='players'`, (err, row) => {
@@ -825,6 +854,15 @@ client.once('clientReady', async () => {
   } catch (err) {
     console.error('Failed to register slash commands:', err);
   }
+
+  await syncSlashCommandsToCurrentGuilds(commands, 'clientReady');
+
+  // Retry once shortly after startup to handle Discord cache/propagation timing.
+  setTimeout(() => {
+    syncSlashCommandsToCurrentGuilds(commands, 'clientReady-retry').catch((err) => {
+      console.error('Delayed direct command sync failed:', err);
+    });
+  }, 30 * 1000);
 });
 
 client.on('guildCreate', async (guild) => {
