@@ -110,13 +110,7 @@ async function registerSlashCommands(client, commands, options = {}) {
   if (guildIds.length > 0) {
     for (const guildId of guildIds) {
       try {
-        await withTimeout(
-          rest.put(Routes.applicationGuildCommands(client.user.id, guildId), {
-            body: [],
-          }),
-          requestTimeoutMs,
-          `Clear guild commands ${guildId}`
-        );
+        console.log(`Registering guild slash commands for ${guildId}...`);
         await withTimeout(
           rest.put(Routes.applicationGuildCommands(client.user.id, guildId), {
             body: commandPayloads,
@@ -134,6 +128,7 @@ async function registerSlashCommands(client, commands, options = {}) {
   }
 
   try {
+    console.log('Registering global slash commands...');
     await withTimeout(
       rest.put(Routes.applicationCommands(client.user.id), {
         body: commandPayloads,
