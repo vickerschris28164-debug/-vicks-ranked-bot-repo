@@ -47,6 +47,36 @@ const DEFAULT_COSMETICS = [
 
 const activeBlackjackGames = new Map();
 const BLACKJACK_TIMEOUT_MS = 2 * 60 * 1000;
+const activeRouletteGames = new Map();
+const ROULETTE_TIMEOUT_MS = 90 * 1000;
+const ROULETTE_RED_NUMBERS = new Set([1, 3, 5, 7, 9, 12, 14, 16, 18, 19, 21, 23, 25, 27, 30, 32, 34, 36]);
+
+const activeHorseRaceGames = new Map();
+const HORSE_RACE_TIMEOUT_MS = 90 * 1000;
+const HORSE_OPTIONS = [
+  { id: 'comet', name: 'Comet', emoji: '🐎', payout: 2, weight: 34 },
+  { id: 'blaze', name: 'Blaze', emoji: '🔥', payout: 3, weight: 25 },
+  { id: 'storm', name: 'Storm', emoji: '🌩️', payout: 4, weight: 18 },
+  { id: 'shadow', name: 'Shadow', emoji: '🌑', payout: 6, weight: 14 },
+  { id: 'wildcard', name: 'Wildcard', emoji: '🃏', payout: 10, weight: 9 },
+];
+
+const activePokerGames = new Map();
+const POKER_TIMEOUT_MS = 2 * 60 * 1000;
+const POKER_RANKS = ['2', '3', '4', '5', '6', '7', '8', '9', '10', 'J', 'Q', 'K', 'A'];
+const POKER_SUITS = ['S', 'H', 'D', 'C'];
+
+const POKER_PAY_TABLE = [
+  { name: 'Royal Flush', multiplier: 300 },
+  { name: 'Straight Flush', multiplier: 60 },
+  { name: 'Four of a Kind', multiplier: 30 },
+  { name: 'Full House', multiplier: 10 },
+  { name: 'Flush', multiplier: 7 },
+  { name: 'Straight', multiplier: 5 },
+  { name: 'Three of a Kind', multiplier: 4 },
+  { name: 'Two Pair', multiplier: 2 },
+  { name: 'Jacks or Better', multiplier: 2 },
+];
 
 function drawBlackjackCard() {
   return Math.ceil(Math.random() * 13);
@@ -243,6 +273,423 @@ function scheduleBlackjackTimeout(game) {
   }, BLACKJACK_TIMEOUT_MS);
 }
 
+function settleCasinoBet(guildId, userId, gameType, bet, payout, result, callback) {
+  db.get('SELECT coins FROM player_coins WHERE guild_id = ? AND user_id = ?', [guildId, userId], (err, row) => {
+    if (err || !row || row.coins < bet) {
+      return callback(err || new Error('Not enough coins to settle bet'));
+    }
+
+    const newCoins = row.coins - bet + payout;
+    db.run('UPDATE player_coins SET coins = ? WHERE guild_id = ? AND user_id = ?', [newCoins, guildId, userId], (updateErr) => {
+      if (updateErr) return callback(updateErr);
+
+      db.run(
+        'INSERT INTO gambling_history (guild_id, user_id, game_type, amount_bet, amount_won, result) VALUES (?, ?, ?, ?, ?, ?)',
+        [guildId, userId, gameType, bet, payout, result],
+        (insertErr) => {
+          if (insertErr) return callback(insertErr);
+          callback(null, { payout, newCoins });
+        }
+      );
+    });
+  });
+}
+
+function clearRouletteTimeout(game) {
+  if (game?.timeoutId) {
+    clearTimeout(game.timeoutId);
+    game.timeoutId = null;
+  }
+}
+
+function spinRouletteNumber() {
+  return Math.floor(Math.random() * 37);
+}
+
+function getRouletteColor(number) {
+  if (number === 0) return 'green';
+  return ROULETTE_RED_NUMBERS.has(number) ? 'red' : 'black';
+}
+
+function rouletteChoiceLabel(choice) {
+  const labels = {
+    red: 'Red',
+    black: 'Black',
+    even: 'Even',
+    odd: 'Odd',
+    low: '1-18',
+    high: '19-36',
+    green: 'Green (0)',
+  };
+  return labels[choice] || choice;
+}
+
+function isRouletteWin(number, choice) {
+  const color = getRouletteColor(number);
+  if (choice === 'red') return color === 'red';
+  if (choice === 'black') return color === 'black';
+  if (choice === 'green') return number === 0;
+  if (number === 0) return false;
+  if (choice === 'even') return number % 2 === 0;
+  if (choice === 'odd') return number % 2 === 1;
+  if (choice === 'low') return number >= 1 && number <= 18;
+  if (choice === 'high') return number >= 19 && number <= 36;
+  return false;
+}
+
+function getRoulettePayout(bet, choice) {
+  if (choice === 'green') return bet * 36;
+  return bet * 2;
+}
+
+function isRouletteEvenMoneyChoice(choice) {
+  return ['red', 'black', 'even', 'odd', 'low', 'high'].includes(choice);
+}
+
+function getRouletteButtons(gameKey, disabled = false) {
+  return [
+    new ActionRowBuilder().addComponents(
+      new ButtonBuilder().setCustomId(`roulette_pick:${gameKey}:red`).setLabel('Red').setStyle(ButtonStyle.Danger).setDisabled(disabled),
+      new ButtonBuilder().setCustomId(`roulette_pick:${gameKey}:black`).setLabel('Black').setStyle(ButtonStyle.Secondary).setDisabled(disabled),
+      new ButtonBuilder().setCustomId(`roulette_pick:${gameKey}:even`).setLabel('Even').setStyle(ButtonStyle.Primary).setDisabled(disabled),
+      new ButtonBuilder().setCustomId(`roulette_pick:${gameKey}:odd`).setLabel('Odd').setStyle(ButtonStyle.Primary).setDisabled(disabled),
+      new ButtonBuilder().setCustomId(`roulette_pick:${gameKey}:green`).setLabel('Green 0').setStyle(ButtonStyle.Success).setDisabled(disabled)
+    ),
+    new ActionRowBuilder().addComponents(
+      new ButtonBuilder().setCustomId(`roulette_pick:${gameKey}:low`).setLabel('1-18').setStyle(ButtonStyle.Secondary).setDisabled(disabled),
+      new ButtonBuilder().setCustomId(`roulette_pick:${gameKey}:high`).setLabel('19-36').setStyle(ButtonStyle.Secondary).setDisabled(disabled),
+      new ButtonBuilder().setCustomId(`roulette_cancel:${gameKey}`).setLabel('Cancel').setStyle(ButtonStyle.Danger).setDisabled(disabled)
+    ),
+  ];
+}
+
+function createRouletteEmbed(game, options = {}) {
+  const statusText = options.statusText || 'Place your roulette bet using the buttons below.';
+  const color = options.color || '#1E90FF';
+
+  const embed = new EmbedBuilder()
+    .setTitle('🎡 Roulette Table')
+    .setColor(color)
+    .setDescription(statusText)
+    .addFields(
+      { name: 'Bet', value: `${game.bet} coins`, inline: true },
+      { name: 'Payouts', value: 'Red/Black/Even/Odd/1-18/19-36: x2\nGreen 0: x36\nZero split-rule: half back on even-money bets', inline: true }
+    );
+
+  if (typeof options.number === 'number') {
+    embed.addFields({ name: 'Wheel', value: `${options.number} (${getRouletteColor(options.number)})`, inline: true });
+  }
+
+  if (typeof options.choice === 'string') {
+    embed.addFields({ name: 'Your Bet', value: rouletteChoiceLabel(options.choice), inline: true });
+  }
+
+  if (typeof options.payout === 'number') {
+    embed.addFields({ name: 'Payout', value: `${options.payout} coins`, inline: true });
+  }
+
+  if (typeof options.balance === 'number') {
+    embed.addFields({ name: 'Balance', value: `${options.balance} coins`, inline: true });
+  }
+
+  return embed;
+}
+
+function clearHorseRaceTimeout(game) {
+  if (game?.timeoutId) {
+    clearTimeout(game.timeoutId);
+    game.timeoutId = null;
+  }
+}
+
+function getHorseRaceButtons(gameKey, disabled = false) {
+  return [
+    new ActionRowBuilder().addComponents(
+      ...HORSE_OPTIONS.map((horse) =>
+        new ButtonBuilder()
+          .setCustomId(`horserace_pick:${gameKey}:${horse.id}`)
+          .setLabel(horse.name)
+          .setStyle(ButtonStyle.Primary)
+          .setDisabled(disabled)
+      )
+    ),
+    new ActionRowBuilder().addComponents(
+      new ButtonBuilder()
+        .setCustomId(`horserace_cancel:${gameKey}`)
+        .setLabel('Cancel')
+        .setStyle(ButtonStyle.Danger)
+        .setDisabled(disabled)
+    ),
+  ];
+}
+
+function pickWinningHorse() {
+  const totalWeight = HORSE_OPTIONS.reduce((sum, horse) => sum + horse.weight, 0);
+  let roll = Math.random() * totalWeight;
+
+  for (const horse of HORSE_OPTIONS) {
+    roll -= horse.weight;
+    if (roll <= 0) return horse;
+  }
+
+  return HORSE_OPTIONS[0];
+}
+
+function buildHorseRaceSummary(winningHorse) {
+  const positions = {};
+  HORSE_OPTIONS.forEach((horse) => {
+    positions[horse.id] = 0;
+  });
+
+  const log = [];
+  for (let turn = 1; turn <= 6; turn += 1) {
+    for (const horse of HORSE_OPTIONS) {
+      const baseMove = Math.floor(Math.random() * 3) + 1;
+      const bonus = horse.id === winningHorse.id ? 1 : 0;
+      positions[horse.id] += baseMove + bonus;
+    }
+
+    const leader = HORSE_OPTIONS
+      .slice()
+      .sort((a, b) => positions[b.id] - positions[a.id])[0];
+
+    log.push(`Turn ${turn}: ${leader.emoji} ${leader.name} leads at ${positions[leader.id]} lengths.`);
+  }
+
+  const standings = HORSE_OPTIONS
+    .slice()
+    .sort((a, b) => positions[b.id] - positions[a.id]);
+
+  log.push(`🏁 Winner: ${winningHorse.emoji} ${winningHorse.name}`);
+  log.push(`🥈 Runner-up: ${standings[1].emoji} ${standings[1].name}`);
+
+  return {
+    recap: log.join('\n'),
+    standings,
+  };
+}
+
+function createHorseRaceEmbed(game, options = {}) {
+  const statusText = options.statusText || 'Pick your horse and watch the race unfold.';
+  const color = options.color || '#1E90FF';
+  const oddsText = HORSE_OPTIONS
+    .map((horse) => `${horse.emoji} ${horse.name}: x${horse.payout}`)
+    .join('\n');
+
+  const embed = new EmbedBuilder()
+    .setTitle('🏇 Horse Race')
+    .setColor(color)
+    .setDescription(statusText)
+    .addFields(
+      { name: 'Bet', value: `${game.bet} coins`, inline: true },
+      { name: 'Odds', value: oddsText, inline: true }
+    );
+
+  if (options.selectedHorse) {
+    embed.addFields({ name: 'Your Horse', value: `${options.selectedHorse.emoji} ${options.selectedHorse.name}`, inline: true });
+  }
+
+  if (options.winningHorse) {
+    embed.addFields({ name: 'Winner', value: `${options.winningHorse.emoji} ${options.winningHorse.name}`, inline: true });
+  }
+
+  if (options.raceSummary) {
+    embed.addFields({ name: 'Race Recap', value: options.raceSummary, inline: false });
+  }
+
+  if (typeof options.payout === 'number') {
+    embed.addFields({ name: 'Payout', value: `${options.payout} coins`, inline: true });
+  }
+
+  if (typeof options.balance === 'number') {
+    embed.addFields({ name: 'Balance', value: `${options.balance} coins`, inline: true });
+  }
+
+  return embed;
+}
+
+function clearPokerTimeout(game) {
+  if (game?.timeoutId) {
+    clearTimeout(game.timeoutId);
+    game.timeoutId = null;
+  }
+}
+
+function createPokerDeck() {
+  const deck = [];
+  for (const suit of POKER_SUITS) {
+    for (const rank of POKER_RANKS) {
+      deck.push({ rank, suit });
+    }
+  }
+
+  for (let i = deck.length - 1; i > 0; i -= 1) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [deck[i], deck[j]] = [deck[j], deck[i]];
+  }
+
+  return deck;
+}
+
+function getPokerSuitSymbol(suit) {
+  const symbols = {
+    S: '♠',
+    H: '♥',
+    D: '♦',
+    C: '♣',
+  };
+  return symbols[suit] || suit;
+}
+
+function formatPokerCard(card) {
+  return `${card.rank}${getPokerSuitSymbol(card.suit)}`;
+}
+
+function formatPokerHand(hand, held = new Set()) {
+  return hand
+    .map((card, index) => `${index + 1}:${formatPokerCard(card)}${held.has(index) ? ' [HELD]' : ''}`)
+    .join('  ');
+}
+
+function getPokerButtons(gameKey, held = new Set(), disabled = false) {
+  return [
+    new ActionRowBuilder().addComponents(
+      ...Array.from({ length: 5 }, (_, idx) => (
+        new ButtonBuilder()
+          .setCustomId(`poker_hold:${gameKey}:${idx}`)
+          .setLabel(`Hold ${idx + 1}`)
+          .setStyle(held.has(idx) ? ButtonStyle.Success : ButtonStyle.Secondary)
+          .setDisabled(disabled)
+      ))
+    ),
+    new ActionRowBuilder().addComponents(
+      new ButtonBuilder()
+        .setCustomId(`poker_draw:${gameKey}`)
+        .setLabel('Draw')
+        .setStyle(ButtonStyle.Primary)
+        .setDisabled(disabled),
+      new ButtonBuilder()
+        .setCustomId(`poker_cancel:${gameKey}`)
+        .setLabel('Cancel')
+        .setStyle(ButtonStyle.Danger)
+        .setDisabled(disabled)
+    ),
+  ];
+}
+
+function getPokerRankValue(rank) {
+  return POKER_RANKS.indexOf(rank) + 2;
+}
+
+function isStraight(values) {
+  const unique = [...new Set(values)].sort((a, b) => a - b);
+  if (unique.length !== 5) return false;
+  if (unique[4] - unique[0] === 4) return true;
+  return JSON.stringify(unique) === JSON.stringify([2, 3, 4, 5, 14]);
+}
+
+function evaluatePokerHand(hand) {
+  const values = hand.map((card) => getPokerRankValue(card.rank));
+  const suits = hand.map((card) => card.suit);
+  const counts = {};
+
+  values.forEach((value) => {
+    counts[value] = (counts[value] || 0) + 1;
+  });
+
+  const countValues = Object.values(counts).sort((a, b) => b - a);
+  const isFlush = suits.every((suit) => suit === suits[0]);
+  const straight = isStraight(values);
+  const sortedValues = [...new Set(values)].sort((a, b) => a - b);
+  const isRoyal = JSON.stringify(sortedValues) === JSON.stringify([10, 11, 12, 13, 14]);
+
+  if (isFlush && straight && isRoyal) return { name: 'Royal Flush', multiplier: 300 };
+  if (isFlush && straight) return { name: 'Straight Flush', multiplier: 60 };
+  if (countValues[0] === 4) return { name: 'Four of a Kind', multiplier: 30 };
+  if (countValues[0] === 3 && countValues[1] === 2) return { name: 'Full House', multiplier: 10 };
+  if (isFlush) return { name: 'Flush', multiplier: 7 };
+  if (straight) return { name: 'Straight', multiplier: 5 };
+  if (countValues[0] === 3) return { name: 'Three of a Kind', multiplier: 4 };
+  if (countValues[0] === 2 && countValues[1] === 2) return { name: 'Two Pair', multiplier: 2 };
+
+  const pairValue = Object.keys(counts).find((value) => counts[value] === 2);
+  if (pairValue && Number(pairValue) >= 11) {
+    return { name: 'Jacks or Better', multiplier: 2 };
+  }
+
+  return { name: 'High Card', multiplier: 0 };
+}
+
+function getPokerPayTableText() {
+  return POKER_PAY_TABLE.map((row) => `${row.name}: x${row.multiplier}`).join('\n');
+}
+
+function createPokerEmbed(game, options = {}) {
+  const statusText = options.statusText || 'Choose which cards to hold, then press Draw.';
+  const color = options.color || '#1E90FF';
+
+  const embed = new EmbedBuilder()
+    .setTitle('♠ Poker Table')
+    .setColor(color)
+    .setDescription(statusText)
+    .addFields(
+      { name: 'Hand', value: formatPokerHand(game.hand, game.held), inline: false },
+      { name: 'Bet', value: `${game.bet} coins`, inline: true },
+      { name: 'Pay Table', value: getPokerPayTableText(), inline: true }
+    );
+
+  if (options.resultName) {
+    embed.addFields({ name: 'Result', value: options.resultName, inline: true });
+  }
+
+  if (typeof options.payout === 'number') {
+    embed.addFields({ name: 'Payout', value: `${options.payout} coins`, inline: true });
+  }
+
+  if (typeof options.balance === 'number') {
+    embed.addFields({ name: 'Balance', value: `${options.balance} coins`, inline: true });
+  }
+
+  return embed;
+}
+
+function editPokerMessage(game, payload) {
+  if (!game?.channelId || !game?.messageId) return;
+
+  client.channels.fetch(game.channelId)
+    .then((channel) => {
+      if (!channel?.isTextBased()) return;
+      channel.messages.fetch(game.messageId)
+        .then((message) => message.edit(payload))
+        .catch((err) => {
+          console.error('Poker message fetch/edit error:', err);
+        });
+    })
+    .catch((err) => {
+      console.error('Poker channel fetch error:', err);
+    });
+}
+
+function autoExpirePokerGame(gameKey) {
+  const game = activePokerGames.get(gameKey);
+  if (!game) return;
+
+  clearPokerTimeout(game);
+  activePokerGames.delete(gameKey);
+  const embed = createPokerEmbed(game, {
+    color: '#808080',
+    statusText: '⏱️ Poker hand timed out. No coins were wagered.',
+  });
+  editPokerMessage(game, { embeds: [embed], components: getPokerButtons(gameKey, game.held, true) });
+}
+
+function schedulePokerTimeout(game) {
+  clearPokerTimeout(game);
+  game.timeoutId = setTimeout(() => {
+    autoExpirePokerGame(game.gameKey);
+  }, POKER_TIMEOUT_MS);
+}
+
 function getCurrentMonth() {
   const now = new Date();
   return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
@@ -254,6 +701,76 @@ function normalizeLadder(ladder) {
 
 function getLadderDisplayName(ladder) {
   return ladder === 'bo3' ? 'Best of 3' : 'Best of 1';
+}
+
+function getEquippedCosmetics(guildId, userId, callback) {
+  db.all(`
+    SELECT cs.name, cs.emoji, cs.slot, cs.rarity, cs.category
+    FROM player_cosmetics pc
+    JOIN cosmetics_shop cs ON pc.cosmetic_id = cs.id
+    WHERE pc.guild_id = ? AND pc.user_id = ? AND pc.is_equipped = 1
+  `, [guildId, userId], (err, rows) => {
+    if (err) return callback(err);
+    callback(null, rows || []);
+  });
+}
+
+function getCosmeticBySlot(cosmetics, slot) {
+  return cosmetics.find((item) => item.slot === slot);
+}
+
+function decoratePlayerName(baseName, cosmetics) {
+  let displayName = baseName;
+
+  const prefix = getCosmeticBySlot(cosmetics, 'prefix');
+  const suffix = getCosmeticBySlot(cosmetics, 'suffix');
+  const badge = getCosmeticBySlot(cosmetics, 'badge');
+  const aura = getCosmeticBySlot(cosmetics, 'aura');
+  const effect = getCosmeticBySlot(cosmetics, 'effect');
+  const banner = getCosmeticBySlot(cosmetics, 'banner');
+  const frame = getCosmeticBySlot(cosmetics, 'frame');
+
+  if (prefix) displayName = `${prefix.emoji} ${displayName}`;
+  if (suffix) displayName = `${displayName} ${suffix.emoji}`;
+  if (badge) displayName = `${displayName} ${badge.emoji}`;
+  if (aura) displayName = `${displayName} ${aura.emoji}`;
+  if (effect) displayName = `${displayName} ${effect.emoji}`;
+  if (banner) displayName = `${displayName} ${banner.emoji}`;
+  if (frame) displayName = `${frame.emoji} ${displayName} ${frame.emoji}`;
+
+  return displayName;
+}
+
+function formatEquippedCosmetics(cosmetics) {
+  if (!cosmetics || cosmetics.length === 0) return 'None';
+  return cosmetics
+    .map((item) => `${item.slot}: ${item.emoji} ${item.name}`)
+    .join('\n');
+}
+
+function decorateLeaderboardRows(guildId, rows, callback) {
+  const decoratedRows = [];
+  let index = 0;
+
+  const next = () => {
+    if (index >= rows.length) {
+      return callback(null, decoratedRows);
+    }
+
+    const row = rows[index];
+    index += 1;
+
+    getEquippedCosmetics(guildId, row.id, (err, cosmetics) => {
+      if (err) return callback(err);
+      decoratedRows.push({
+        ...row,
+        displayName: decoratePlayerName(row.name, cosmetics),
+      });
+      next();
+    });
+  };
+
+  next();
 }
 
 function ensurePlayerForMonth(id, name, month, ladder, callback) {
@@ -745,6 +1262,27 @@ client.once('clientReady', async () => {
           .setDescription('Bet amount')
           .setRequired(true)),
     new SlashCommandBuilder()
+      .setName('poker')
+      .setDescription('Play interactive poker (hold cards then draw)')
+      .addIntegerOption(option =>
+        option.setName('amount')
+          .setDescription('Bet amount')
+          .setRequired(true)),
+    new SlashCommandBuilder()
+      .setName('roulette')
+      .setDescription('Play interactive roulette with live bet choices')
+      .addIntegerOption(option =>
+        option.setName('amount')
+          .setDescription('Bet amount')
+          .setRequired(true)),
+    new SlashCommandBuilder()
+      .setName('horse_race')
+      .setDescription('Pick a horse and run an immersive race')
+      .addIntegerOption(option =>
+        option.setName('amount')
+          .setDescription('Bet amount')
+          .setRequired(true)),
+    new SlashCommandBuilder()
       .setName('shop')
       .setDescription('Browse or buy XP cosmetics')
       .addSubcommand(subcommand =>
@@ -981,6 +1519,232 @@ setInterval(() => {
 
 client.on('interactionCreate', async interaction => {
   if (interaction.isButton()) {
+    if (interaction.customId.startsWith('poker_')) {
+      const [action, ...parts] = interaction.customId.split(':');
+      const gameKey = action === 'poker_hold' ? parts.slice(0, -1).join(':') : parts.join(':');
+      const holdIndex = action === 'poker_hold' ? Number(parts[parts.length - 1]) : null;
+      const game = activePokerGames.get(gameKey);
+
+      if (!game) {
+        return interaction.reply({ content: 'This poker hand is no longer active.', ephemeral: true });
+      }
+
+      if (interaction.user.id !== game.userId || interaction.guildId !== game.guildId) {
+        return interaction.reply({ content: 'Only the player who started this poker hand can use these buttons.', ephemeral: true });
+      }
+
+      if (action === 'poker_cancel') {
+        clearPokerTimeout(game);
+        activePokerGames.delete(gameKey);
+        const cancelledEmbed = createPokerEmbed(game, {
+          color: '#808080',
+          statusText: 'Poker hand canceled. No coins were wagered.',
+        });
+        return interaction.update({ embeds: [cancelledEmbed], components: getPokerButtons(gameKey, game.held, true) });
+      }
+
+      if (action === 'poker_hold') {
+        if (Number.isNaN(holdIndex) || holdIndex < 0 || holdIndex > 4) {
+          return interaction.reply({ content: 'Invalid hold index.', ephemeral: true });
+        }
+
+        if (game.held.has(holdIndex)) {
+          game.held.delete(holdIndex);
+        } else {
+          game.held.add(holdIndex);
+        }
+
+        schedulePokerTimeout(game);
+        const embed = createPokerEmbed(game, {
+          color: '#1E90FF',
+          statusText: 'Card hold updated. Press Draw when ready.',
+        });
+        return interaction.update({ embeds: [embed], components: getPokerButtons(gameKey, game.held, false) });
+      }
+
+      if (action === 'poker_draw') {
+        for (let idx = 0; idx < 5; idx += 1) {
+          if (!game.held.has(idx)) {
+            game.hand[idx] = game.deck.pop();
+          }
+        }
+
+        clearPokerTimeout(game);
+        activePokerGames.delete(gameKey);
+
+        const handResult = evaluatePokerHand(game.hand);
+        const payout = game.bet * handResult.multiplier;
+        const didWin = payout > 0;
+
+        settleCasinoBet(game.guildId, game.userId, 'poker', game.bet, payout, didWin ? 'win' : 'loss', (err, outcome) => {
+          if (err) {
+            console.error('Poker settle error:', err);
+            return interaction.update({
+              content: 'Error settling this poker hand. No coins were changed.',
+              embeds: [],
+              components: [],
+            });
+          }
+
+          const embed = createPokerEmbed(game, {
+            color: didWin ? '#00FF99' : '#FF6B6B',
+            statusText: didWin ? '✅ Nice hand! You got paid.' : '❌ No payout this hand.',
+            resultName: handResult.name,
+            payout: outcome.payout,
+            balance: outcome.newCoins,
+          });
+
+          interaction.update({ embeds: [embed], components: getPokerButtons(gameKey, game.held, true) });
+        });
+        return;
+      }
+    }
+
+    if (interaction.customId.startsWith('roulette_')) {
+      const [action, ...parts] = interaction.customId.split(':');
+      const gameKey = action === 'roulette_pick' ? parts.slice(0, -1).join(':') : parts.join(':');
+      const choice = action === 'roulette_pick' ? parts[parts.length - 1] : null;
+      const game = activeRouletteGames.get(gameKey);
+
+      if (!game) {
+        return interaction.reply({ content: 'This roulette bet is no longer active.', ephemeral: true });
+      }
+
+      if (interaction.user.id !== game.userId || interaction.guildId !== game.guildId) {
+        return interaction.reply({ content: 'Only the player who started this roulette bet can use these buttons.', ephemeral: true });
+      }
+
+      if (action === 'roulette_cancel') {
+        clearRouletteTimeout(game);
+        activeRouletteGames.delete(gameKey);
+        const cancelledEmbed = createRouletteEmbed(game, {
+          color: '#808080',
+          statusText: 'Bet cancelled. No coins were wagered.',
+        });
+        return interaction.update({ embeds: [cancelledEmbed], components: getRouletteButtons(gameKey, true) });
+      }
+
+      const validChoices = new Set(['red', 'black', 'even', 'odd', 'low', 'high', 'green']);
+      if (!validChoices.has(choice)) {
+        return interaction.reply({ content: 'Invalid roulette choice.', ephemeral: true });
+      }
+
+      clearRouletteTimeout(game);
+      activeRouletteGames.delete(gameKey);
+
+      const number = spinRouletteNumber();
+      const won = isRouletteWin(number, choice);
+      let payout = 0;
+      let result = 'loss';
+      let statusText = '❌ House wins this spin.';
+      let color = '#FF6B6B';
+
+      if (won) {
+        payout = getRoulettePayout(game.bet, choice);
+        result = 'win';
+        statusText = '✅ You won the roulette spin!';
+        color = '#00FF99';
+      } else if (number === 0 && isRouletteEvenMoneyChoice(choice)) {
+        payout = Math.floor(game.bet / 2);
+        result = 'push';
+        statusText = '🟡 Zero landed. Split-rule refunds half your even-money bet.';
+        color = '#FFD700';
+      }
+
+      settleCasinoBet(game.guildId, game.userId, 'roulette', game.bet, payout, result, (err, outcome) => {
+        if (err) {
+          console.error('Roulette settle error:', err);
+          return interaction.update({
+            content: 'Error settling this roulette bet. No coins were changed.',
+            embeds: [],
+            components: [],
+          });
+        }
+
+        const embed = createRouletteEmbed(game, {
+          color,
+          statusText,
+          number,
+          choice,
+          payout: outcome.payout,
+          balance: outcome.newCoins,
+        });
+
+        interaction.update({ embeds: [embed], components: getRouletteButtons(gameKey, true) });
+      });
+      return;
+    }
+
+    if (interaction.customId.startsWith('horserace_')) {
+      const [action, ...parts] = interaction.customId.split(':');
+      const gameKey = action === 'horserace_pick' ? parts.slice(0, -1).join(':') : parts.join(':');
+      const selectedHorseId = action === 'horserace_pick' ? parts[parts.length - 1] : null;
+      const game = activeHorseRaceGames.get(gameKey);
+
+      if (!game) {
+        return interaction.reply({ content: 'This horse race is no longer active.', ephemeral: true });
+      }
+
+      if (interaction.user.id !== game.userId || interaction.guildId !== game.guildId) {
+        return interaction.reply({ content: 'Only the player who started this horse race can use these buttons.', ephemeral: true });
+      }
+
+      if (action === 'horserace_cancel') {
+        clearHorseRaceTimeout(game);
+        activeHorseRaceGames.delete(gameKey);
+        const cancelledEmbed = createHorseRaceEmbed(game, {
+          color: '#808080',
+          statusText: 'Race cancelled. No coins were wagered.',
+        });
+        return interaction.update({ embeds: [cancelledEmbed], components: getHorseRaceButtons(gameKey, true) });
+      }
+
+      const selectedHorse = HORSE_OPTIONS.find((horse) => horse.id === selectedHorseId);
+      if (!selectedHorse) {
+        return interaction.reply({ content: 'Invalid horse selection.', ephemeral: true });
+      }
+
+      clearHorseRaceTimeout(game);
+      activeHorseRaceGames.delete(gameKey);
+
+      const winningHorse = pickWinningHorse();
+      const raceResult = buildHorseRaceSummary(winningHorse);
+      const raceSummary = raceResult.recap;
+      const secondPlaceHorse = raceResult.standings[1];
+      const won = selectedHorse.id === winningHorse.id;
+      const runnerUpRefund = !won && selectedHorse.id === secondPlaceHorse.id;
+      const payout = won ? game.bet * selectedHorse.payout : runnerUpRefund ? Math.floor(game.bet * 0.5) : 0;
+      const result = won ? 'win' : runnerUpRefund ? 'push' : 'loss';
+
+      settleCasinoBet(game.guildId, game.userId, 'horse_race', game.bet, payout, result, (err, outcome) => {
+        if (err) {
+          console.error('Horse race settle error:', err);
+          return interaction.update({
+            content: 'Error settling this horse race. No coins were changed.',
+            embeds: [],
+            components: [],
+          });
+        }
+
+        const embed = createHorseRaceEmbed(game, {
+          color: won ? '#00FF99' : runnerUpRefund ? '#FFD700' : '#FF6B6B',
+          statusText: won
+            ? '✅ Your horse won the race!'
+            : runnerUpRefund
+              ? '🟡 Photo finish! Your horse placed second, so half your bet was refunded.'
+              : '❌ Your horse came up short this time.',
+          selectedHorse,
+          winningHorse,
+          raceSummary,
+          payout: outcome.payout,
+          balance: outcome.newCoins,
+        });
+
+        interaction.update({ embeds: [embed], components: getHorseRaceButtons(gameKey, true) });
+      });
+      return;
+    }
+
     if (!interaction.customId.startsWith('blackjack_')) return;
 
     const [action, ...gameKeyParts] = interaction.customId.split(':');
@@ -1163,7 +1927,7 @@ client.on('interactionCreate', async interaction => {
     const month = getCurrentMonth();
     const ladder = normalizeLadder(interaction.options.getString('ladder'));
 
-    db.all(`SELECT name, points FROM players WHERE month = ? AND ladder_type = ? ORDER BY points DESC LIMIT 10`, [month, ladder], (err, rows) => {
+    db.all(`SELECT id, name, points FROM players WHERE month = ? AND ladder_type = ? ORDER BY points DESC LIMIT 10`, [month, ladder], (err, rows) => {
       if (err) {
         console.error(err);
         return interaction.reply('Error fetching leaderboard.');
@@ -1176,11 +1940,20 @@ client.on('interactionCreate', async interaction => {
       if (rows.length === 0) {
         embed.setDescription('No players registered yet for this ladder.');
       } else {
-        let description = '';
-        rows.forEach((row, index) => {
-          description += `${index + 1}. ${row.name}: ${row.points} points\n`;
+        decorateLeaderboardRows(interaction.guild.id, rows, (decorateErr, decoratedRows) => {
+          if (decorateErr) {
+            console.error('Leaderboard cosmetics decorate error:', decorateErr);
+            return interaction.reply('Error fetching leaderboard.');
+          }
+
+          let description = '';
+          decoratedRows.forEach((row, index) => {
+            description += `${index + 1}. ${row.displayName}: ${row.points} points\n`;
+          });
+          embed.setDescription(description);
+          interaction.reply({ embeds: [embed] });
         });
-        embed.setDescription(description);
+        return;
       }
 
       interaction.reply({ embeds: [embed] });
@@ -1298,6 +2071,9 @@ client.on('interactionCreate', async interaction => {
         { name: '/coinflip amount:integer choice:heads|tails', value: 'Bet your coins on a coin flip.', inline: false },
         { name: '/slots amount:integer', value: 'Play the slot machine for coins.', inline: false },
         { name: '/blackjack amount:integer', value: 'Play interactive blackjack with Hit/Stand (auto-stands after 2 min idle).', inline: false },
+        { name: '/poker amount:integer', value: 'Play interactive poker with hold-and-draw decisions.', inline: false },
+        { name: '/roulette amount:integer', value: 'Play interactive roulette with multiple bet options (auto-cancels after inactivity).', inline: false },
+        { name: '/horse_race amount:integer', value: 'Pick a horse with odds and run a race simulation.', inline: false },
         { name: '/history_list [ladder]', value: 'View all months with leaderboard data.', inline: false },
         { name: '/history month:YYYY-MM [ladder]', value: 'View leaderboard for a specific month.', inline: false },
         { name: '/player_history [player] [ladder]', value: 'View a player\'s stats across all months.', inline: false },
@@ -1528,7 +2304,7 @@ client.on('interactionCreate', async interaction => {
     const month = getCurrentMonth();
     const ladder = 'bo1';
 
-    db.all(`SELECT name, points FROM players WHERE month = ? AND ladder_type = ? ORDER BY points DESC LIMIT 10`, [month, ladder], (err, rows) => {
+    db.all(`SELECT id, name, points FROM players WHERE month = ? AND ladder_type = ? ORDER BY points DESC LIMIT 10`, [month, ladder], (err, rows) => {
       if (err) {
         console.error(err);
         return interaction.reply('Error fetching BO1 leaderboard.');
@@ -1541,11 +2317,20 @@ client.on('interactionCreate', async interaction => {
       if (rows.length === 0) {
         embed.setDescription('No players registered yet for BO1.');
       } else {
-        let description = '';
-        rows.forEach((row, index) => {
-          description += `${index + 1}. ${row.name}: ${row.points} points\n`;
+        decorateLeaderboardRows(interaction.guild.id, rows, (decorateErr, decoratedRows) => {
+          if (decorateErr) {
+            console.error('BO1 cosmetics decorate error:', decorateErr);
+            return interaction.reply('Error fetching BO1 leaderboard.');
+          }
+
+          let description = '';
+          decoratedRows.forEach((row, index) => {
+            description += `${index + 1}. ${row.displayName}: ${row.points} points\n`;
+          });
+          embed.setDescription(description);
+          interaction.reply({ embeds: [embed] });
         });
-        embed.setDescription(description);
+        return;
       }
 
       interaction.reply({ embeds: [embed] });
@@ -1576,7 +2361,7 @@ client.on('interactionCreate', async interaction => {
     const month = getCurrentMonth();
     const ladder = 'bo3';
 
-    db.all(`SELECT name, points FROM players WHERE month = ? AND ladder_type = ? ORDER BY points DESC LIMIT 10`, [month, ladder], (err, rows) => {
+    db.all(`SELECT id, name, points FROM players WHERE month = ? AND ladder_type = ? ORDER BY points DESC LIMIT 10`, [month, ladder], (err, rows) => {
       if (err) {
         console.error(err);
         return interaction.reply('Error fetching BO3 leaderboard.');
@@ -1589,11 +2374,20 @@ client.on('interactionCreate', async interaction => {
       if (rows.length === 0) {
         embed.setDescription('No players registered yet for BO3.');
       } else {
-        let description = '';
-        rows.forEach((row, index) => {
-          description += `${index + 1}. ${row.name}: ${row.points} points\n`;
+        decorateLeaderboardRows(interaction.guild.id, rows, (decorateErr, decoratedRows) => {
+          if (decorateErr) {
+            console.error('BO3 cosmetics decorate error:', decorateErr);
+            return interaction.reply('Error fetching BO3 leaderboard.');
+          }
+
+          let description = '';
+          decoratedRows.forEach((row, index) => {
+            description += `${index + 1}. ${row.displayName}: ${row.points} points\n`;
+          });
+          embed.setDescription(description);
+          interaction.reply({ embeds: [embed] });
         });
-        embed.setDescription(description);
+        return;
       }
 
       interaction.reply({ embeds: [embed] });
@@ -1750,6 +2544,132 @@ client.on('interactionCreate', async interaction => {
         });
     });
 
+  } else if (commandName === 'poker') {
+    const userId = interaction.user.id;
+    const guildId = interaction.guild.id;
+    const bet = interaction.options.getInteger('amount');
+
+    if (bet <= 0) {
+      return interaction.reply('Bet amount must be greater than 0.');
+    }
+
+    const gameKey = `${guildId}:${userId}`;
+    if (activePokerGames.has(gameKey)) {
+      return interaction.reply({ content: 'You already have an active poker hand. Finish it before starting a new one.', ephemeral: true });
+    }
+
+    db.get('SELECT coins FROM player_coins WHERE guild_id = ? AND user_id = ?', [guildId, userId], (err, row) => {
+      if (err || !row || row.coins < bet) return interaction.reply(`❌ You don't have enough coins! You have ${row?.coins || 0}, bet is ${bet}`);
+
+      const deck = createPokerDeck();
+      const hand = [deck.pop(), deck.pop(), deck.pop(), deck.pop(), deck.pop()];
+      const game = {
+        gameKey,
+        guildId,
+        userId,
+        bet,
+        deck,
+        hand,
+        held: new Set(),
+      };
+
+      activePokerGames.set(gameKey, game);
+
+      const embed = createPokerEmbed(game, {
+        color: '#1E90FF',
+        statusText: 'Select cards to hold, then press Draw. You have one draw.',
+      });
+
+      interaction.reply({ embeds: [embed], components: getPokerButtons(gameKey, game.held), fetchReply: true })
+        .then((message) => {
+          game.channelId = message.channelId;
+          game.messageId = message.id;
+          schedulePokerTimeout(game);
+        })
+        .catch((replyErr) => {
+          console.error('Poker reply error:', replyErr);
+          activePokerGames.delete(gameKey);
+        });
+    });
+
+  } else if (commandName === 'roulette') {
+    const userId = interaction.user.id;
+    const guildId = interaction.guild.id;
+    const bet = interaction.options.getInteger('amount');
+
+    if (bet <= 0) {
+      return interaction.reply('Bet amount must be greater than 0.');
+    }
+
+    const gameKey = `${guildId}:${userId}`;
+    if (activeRouletteGames.has(gameKey)) {
+      return interaction.reply({ content: 'You already have an active roulette bet. Finish it before starting a new one.', ephemeral: true });
+    }
+
+    db.get('SELECT coins FROM player_coins WHERE guild_id = ? AND user_id = ?', [guildId, userId], (err, row) => {
+      if (err || !row || row.coins < bet) return interaction.reply(`❌ You don't have enough coins! You have ${row?.coins || 0}, bet is ${bet}`);
+
+      const game = { gameKey, guildId, userId, bet };
+      activeRouletteGames.set(gameKey, game);
+
+      const embed = createRouletteEmbed(game, {
+        color: '#1E90FF',
+        statusText: 'The dealer spins once after you choose your bet type. Choose wisely.',
+      });
+
+      interaction.reply({ embeds: [embed], components: getRouletteButtons(gameKey), fetchReply: true })
+        .then(() => {
+          game.timeoutId = setTimeout(() => {
+            const staleGame = activeRouletteGames.get(gameKey);
+            if (!staleGame) return;
+            activeRouletteGames.delete(gameKey);
+          }, ROULETTE_TIMEOUT_MS);
+        })
+        .catch((replyErr) => {
+          console.error('Roulette reply error:', replyErr);
+          activeRouletteGames.delete(gameKey);
+        });
+    });
+
+  } else if (commandName === 'horse_race') {
+    const userId = interaction.user.id;
+    const guildId = interaction.guild.id;
+    const bet = interaction.options.getInteger('amount');
+
+    if (bet <= 0) {
+      return interaction.reply('Bet amount must be greater than 0.');
+    }
+
+    const gameKey = `${guildId}:${userId}`;
+    if (activeHorseRaceGames.has(gameKey)) {
+      return interaction.reply({ content: 'You already have an active horse race. Finish it before starting a new one.', ephemeral: true });
+    }
+
+    db.get('SELECT coins FROM player_coins WHERE guild_id = ? AND user_id = ?', [guildId, userId], (err, row) => {
+      if (err || !row || row.coins < bet) return interaction.reply(`❌ You don't have enough coins! You have ${row?.coins || 0}, bet is ${bet}`);
+
+      const game = { gameKey, guildId, userId, bet };
+      activeHorseRaceGames.set(gameKey, game);
+
+      const embed = createHorseRaceEmbed(game, {
+        color: '#1E90FF',
+        statusText: 'Choose your horse. Longshots pay more, favorites win more often.',
+      });
+
+      interaction.reply({ embeds: [embed], components: getHorseRaceButtons(gameKey), fetchReply: true })
+        .then(() => {
+          game.timeoutId = setTimeout(() => {
+            const staleGame = activeHorseRaceGames.get(gameKey);
+            if (!staleGame) return;
+            activeHorseRaceGames.delete(gameKey);
+          }, HORSE_RACE_TIMEOUT_MS);
+        })
+        .catch((replyErr) => {
+          console.error('Horse race reply error:', replyErr);
+          activeHorseRaceGames.delete(gameKey);
+        });
+    });
+
   } else if (commandName === 'bump') {
     const userId = interaction.user.id;
     const now = Date.now();
@@ -1849,15 +2769,33 @@ client.on('interactionCreate', async interaction => {
       const itemName = interaction.options.getString('item');
 
       db.get(`
-        SELECT pc.id FROM player_cosmetics pc
+        SELECT pc.id, cs.slot, cs.emoji FROM player_cosmetics pc
         JOIN cosmetics_shop cs ON pc.cosmetic_id = cs.id
         WHERE pc.guild_id = ? AND pc.user_id = ? AND cs.name = ?
       `, [guildId, userId, itemName], (err, cosmetic) => {
         if (!cosmetic) return interaction.reply('You don\'t own this cosmetic');
 
-        db.run('UPDATE player_cosmetics SET is_equipped = 0 WHERE guild_id = ? AND user_id = ?', [guildId, userId], (err) => {
-          db.run('UPDATE player_cosmetics SET is_equipped = 1 WHERE id = ?', [cosmetic.id], (err) => {
-            interaction.reply(`✅ Equipped ${itemName}!`);
+        db.run(`
+          UPDATE player_cosmetics
+          SET is_equipped = 0
+          WHERE id IN (
+            SELECT pc.id
+            FROM player_cosmetics pc
+            JOIN cosmetics_shop cs ON pc.cosmetic_id = cs.id
+            WHERE pc.guild_id = ? AND pc.user_id = ? AND cs.slot = ?
+          )
+        `, [guildId, userId, cosmetic.slot], (clearErr) => {
+          if (clearErr) {
+            console.error('Clear slot equip error:', clearErr);
+            return interaction.reply('Error equipping cosmetic');
+          }
+
+          db.run('UPDATE player_cosmetics SET is_equipped = 1 WHERE id = ?', [cosmetic.id], (equipErr) => {
+            if (equipErr) {
+              console.error('Set equip error:', equipErr);
+              return interaction.reply('Error equipping cosmetic');
+            }
+            interaction.reply(`✅ Equipped ${cosmetic.emoji} ${itemName} in ${cosmetic.slot} slot!`);
           });
         });
       });
@@ -1867,7 +2805,7 @@ client.on('interactionCreate', async interaction => {
       });
     } else if (subcommand === 'inventory') {
       db.all(`
-        SELECT cs.name, cs.emoji, cs.category, cs.rarity, pc.is_equipped FROM player_cosmetics pc
+        SELECT cs.name, cs.emoji, cs.category, cs.rarity, cs.slot, pc.is_equipped FROM player_cosmetics pc
         JOIN cosmetics_shop cs ON pc.cosmetic_id = cs.id
         WHERE pc.guild_id = ? AND pc.user_id = ?
       `, [guildId, userId], (err, cosmetics) => {
@@ -1876,7 +2814,7 @@ client.on('interactionCreate', async interaction => {
         }
 
         const list = cosmetics.map(c => {
-          return `${c.is_equipped ? '✅' : '  '} ${c.emoji} ${c.name} (${c.rarity}, ${c.category})`;
+          return `${c.is_equipped ? '✅' : '  '} ${c.emoji} ${c.name} (${c.rarity}, ${c.category}, ${c.slot})`;
         }).join('\n');
 
         const embed = new EmbedBuilder()
@@ -1901,15 +2839,24 @@ client.on('interactionCreate', async interaction => {
         return interaction.reply(`${player.username} has not earned any XP yet.`);
       }
 
-      const embed = new EmbedBuilder()
-        .setTitle(`💰 ${player.username}'s Balance`)
-        .setColor('#00FF99')
-        .addFields(
-          { name: 'XP Balance', value: `${row.xp} XP`, inline: true },
-          { name: 'Level', value: `${row.level}`, inline: true }
-        );
+      getEquippedCosmetics(guildId, player.id, (cosmeticErr, cosmetics) => {
+        if (cosmeticErr) {
+          console.error('Balance cosmetics lookup error:', cosmeticErr);
+          return interaction.reply('Error fetching balance');
+        }
 
-      interaction.reply({ embeds: [embed] });
+        const displayName = decoratePlayerName(player.username, cosmetics);
+        const embed = new EmbedBuilder()
+          .setTitle(`💰 ${displayName}'s Balance`)
+          .setColor('#00FF99')
+          .addFields(
+            { name: 'XP Balance', value: `${row.xp} XP`, inline: true },
+            { name: 'Level', value: `${row.level}`, inline: true },
+            { name: 'Equipped Cosmetics', value: formatEquippedCosmetics(cosmetics), inline: false }
+          );
+
+        interaction.reply({ embeds: [embed] });
+      });
     });
   } else if (commandName === 'daily') {
     const userId = interaction.user.id;
@@ -1949,16 +2896,25 @@ client.on('interactionCreate', async interaction => {
       const nextMilestone = currentMilestone + 50;
       const xpToNextMilestone = nextMilestone - row.xp;
       
-      const embed = new EmbedBuilder()
-        .setTitle(`💰 ${player.username}'s XP Balance`)
-        .setColor(0x00FF00)
-        .addFields(
-          { name: 'Current XP', value: `${row.xp}`, inline: true },
-          { name: 'Next Milestone', value: `${nextMilestone} XP`, inline: true },
-          { name: 'XP to Milestone', value: `${xpToNextMilestone} XP`, inline: true }
-        )
-        .setThumbnail(player.displayAvatarURL());
-      interaction.reply({ embeds: [embed] });
+      getEquippedCosmetics(interaction.guildId, player.id, (cosmeticErr, cosmetics) => {
+        if (cosmeticErr) {
+          console.error('XP balance cosmetics lookup error:', cosmeticErr);
+          return interaction.reply(`No XP data found for ${player.username}.`);
+        }
+
+        const displayName = decoratePlayerName(player.username, cosmetics);
+        const embed = new EmbedBuilder()
+          .setTitle(`💰 ${displayName}'s XP Balance`)
+          .setColor(0x00FF00)
+          .addFields(
+            { name: 'Current XP', value: `${row.xp}`, inline: true },
+            { name: 'Next Milestone', value: `${nextMilestone} XP`, inline: true },
+            { name: 'XP to Milestone', value: `${xpToNextMilestone} XP`, inline: true },
+            { name: 'Equipped Cosmetics', value: formatEquippedCosmetics(cosmetics), inline: false }
+          )
+          .setThumbnail(player.displayAvatarURL());
+        interaction.reply({ embeds: [embed] });
+      });
     });
   } else if (commandName === 'timer') {
     const matchType = interaction.options.getString('match_type');
