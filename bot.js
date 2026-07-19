@@ -3241,22 +3241,6 @@ cron.schedule('0 0 1 * *', () => {
   console.log('New monthly leaderboard cycle started:', getCurrentMonth());
 });
 
-cron.schedule('0 */2 * * *', () => {
-  const guilds = client.guilds.cache;
-  guilds.forEach(guild => {
-    const channel = guild.channels.cache.find(ch => ch.name === 'bump');
-    if (channel) {
-      const embed = new EmbedBuilder()
-        .setTitle('🔔 Bump Reminder!')
-        .setColor(0xFF6347)
-        .setDescription('Don\'t forget to bump the server!\n\nUse `/bump` to help The Hideout grow! 📈');
-
-      channel.send({ embeds: [embed] }).catch(err => {
-        console.error(`Error sending bump reminder to ${guild.name}:`, err);
-      });
-    }
-  });
-});
 
 const token = process.env.DISCORD_TOKEN || process.env.BOT_TOKEN || process.env.TOKEN;
 
