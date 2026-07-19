@@ -435,38 +435,51 @@ function pickWinningHorse() {
   return HORSE_OPTIONS[0];
 }
 
-function buildHorseRaceSummary(winningHorse) {
-  const positions = {};
-  HORSE_OPTIONS.forEach((horse) => {
-    positions[horse.id] = 0;
-  });
+const RACE_LEAD_COMMENTS = [
+  'bursts out of the gate!',
+  'is pulling clear!',
+  'takes the inside line!',
+  'surges on the back straight!',
+  'won\'t be caught!',
+  'storms to the finish!',
+];
 
-  const log = [];
+const RACE_CLOSE_COMMENTS = [
+  'but it\'s tight at the front!',
+  'the pack is right behind!',
+  'the crowd is on their feet!',
+  'can anyone catch them?',
+  'it\'s a battle out there!',
+  'what a race this is!',
+];
+
+function buildRaceSteps(winningHorse) {
+  const positions = {};
+  HORSE_OPTIONS.forEach((horse) => { positions[horse.id] = 0; });
+
+  const steps = [];
   for (let turn = 1; turn <= 6; turn += 1) {
     for (const horse of HORSE_OPTIONS) {
-      const baseMove = Math.floor(Math.random() * 3) + 1;
+      const baseMove = Math.floor(Math.random() * 4) + 1;
       const bonus = horse.id === winningHorse.id ? 1 : 0;
       positions[horse.id] += baseMove + bonus;
     }
-
-    const leader = HORSE_OPTIONS
-      .slice()
-      .sort((a, b) => positions[b.id] - positions[a.id])[0];
-
-    log.push(`Turn ${turn}: ${leader.emoji} ${leader.name} leads at ${positions[leader.id]} lengths.`);
+    const sorted = HORSE_OPTIONS.slice().sort((a, b) => positions[b.id] - positions[a.id]);
+    steps.push({ turn, positions: { ...positions }, leader: sorted[0], standings: sorted });
   }
+  return steps;
+}
 
-  const standings = HORSE_OPTIONS
-    .slice()
-    .sort((a, b) => positions[b.id] - positions[a.id]);
-
-  log.push(`🏁 Winner: ${winningHorse.emoji} ${winningHorse.name}`);
-  log.push(`🥈 Runner-up: ${standings[1].emoji} ${standings[1].name}`);
-
-  return {
-    recap: log.join('\n'),
-    standings,
-  };
+function buildTrackDisplay(positions, selectedHorseId) {
+  const maxPos = Math.max(...Object.values(positions));
+  const TRACK_LEN = 10;
+  return HORSE_OPTIONS.map((horse) => {
+    const pct = maxPos > 0 ? positions[horse.id] / maxPos : 0;
+    const filled = Math.max(1, Math.round(pct * TRACK_LEN));
+    const bar = '█'.repeat(filled) + '░'.repeat(TRACK_LEN - filled);
+    const tag = horse.id === selectedHorseId ? ' ⭐' : '';
+    return `${horse.emoji} \`${bar}\` ${horse.name}${tag}`;
+  }).join('\n');
 }
 
 function createHorseRaceEmbed(game, options = {}) {
@@ -1707,41 +1720,86 @@ client.on('interactionCreate', async interaction => {
       clearHorseRaceTimeout(game);
       activeHorseRaceGames.delete(gameKey);
 
+      await interaction.deferUpdate();
+
       const winningHorse = pickWinningHorse();
-      const raceResult = buildHorseRaceSummary(winningHorse);
-      const raceSummary = raceResult.recap;
-      const secondPlaceHorse = raceResult.standings[1];
+      const steps = buildRaceSteps(winningHorse);
+      const raceDelay = (ms) => new Promise((res) => setTimeout(res, ms));
+
+      // Opening gun
+      const openingEmbed = new EmbedBuilder()
+        .setTitle('🏇 Horse Race')
+        .setColor('#FFD700')
+        .setDescription('🚦 **The gates open… and they\'re off!**')
+        .addFields(
+          { name: 'Your Pick', value: `${selectedHorse.emoji} **${selectedHorse.name}**`, inline: true },
+          { name: 'Bet', value: `${game.bet} coins`, inline: true },
+        );
+      await interaction.editReply({ embeds: [openingEmbed], components: [] });
+
+      // Live turn-by-turn track
+      for (const step of steps) {
+        await raceDelay(1500);
+        const leadComment = RACE_LEAD_COMMENTS[Math.min(step.turn - 1, RACE_LEAD_COMMENTS.length - 1)];
+        const sideComment = RACE_CLOSE_COMMENTS[Math.min(step.turn - 1, RACE_CLOSE_COMMENTS.length - 1)];
+        const track = buildTrackDisplay(step.positions, selectedHorse.id);
+        const turnEmbed = new EmbedBuilder()
+          .setTitle(`🏇 Turn ${step.turn}/6`)
+          .setColor('#FFD700')
+          .setDescription(`${step.leader.emoji} **${step.leader.name}** ${leadComment} — ${sideComment}`)
+          .addFields(
+            { name: '\u200b', value: track, inline: false },
+            { name: 'Your Pick', value: `${selectedHorse.emoji} ${selectedHorse.name}`, inline: true },
+            { name: 'Bet', value: `${game.bet} coins`, inline: true },
+          );
+        await interaction.editReply({ embeds: [turnEmbed], components: [] });
+      }
+
+      // Settle bet then show final
+      const finalStandings = steps[steps.length - 1].standings;
+      const secondPlaceHorse = finalStandings[1];
       const won = selectedHorse.id === winningHorse.id;
       const runnerUpRefund = !won && selectedHorse.id === secondPlaceHorse.id;
       const payout = won ? game.bet * selectedHorse.payout : runnerUpRefund ? Math.floor(game.bet * 0.5) : 0;
       const result = won ? 'win' : runnerUpRefund ? 'push' : 'loss';
 
-      settleCasinoBet(game.guildId, game.userId, 'horse_race', game.bet, payout, result, (err, outcome) => {
-        if (err) {
-          console.error('Horse race settle error:', err);
-          return interaction.update({
-            content: 'Error settling this horse race. No coins were changed.',
-            embeds: [],
-            components: [],
-          });
-        }
+      await raceDelay(1000);
 
-        const embed = createHorseRaceEmbed(game, {
-          color: won ? '#00FF99' : runnerUpRefund ? '#FFD700' : '#FF6B6B',
-          statusText: won
-            ? '✅ Your horse won the race!'
-            : runnerUpRefund
-              ? '🟡 Photo finish! Your horse placed second, so half your bet was refunded.'
-              : '❌ Your horse came up short this time.',
-          selectedHorse,
-          winningHorse,
-          raceSummary,
-          payout: outcome.payout,
-          balance: outcome.newCoins,
+      const settleOutcome = await new Promise((resolve) => {
+        settleCasinoBet(game.guildId, game.userId, 'horse_race', game.bet, payout, result, (err, outcome) => {
+          if (err) {
+            console.error('Horse race settle error:', err);
+            resolve(null);
+          } else {
+            resolve(outcome);
+          }
         });
-
-        interaction.update({ embeds: [embed], components: getHorseRaceButtons(gameKey, true) });
       });
+
+      const finalTrack = buildTrackDisplay(steps[steps.length - 1].positions, selectedHorse.id);
+      const finalColor = won ? '#00FF99' : runnerUpRefund ? '#FFD700' : '#FF6B6B';
+      const finalStatus = won
+        ? `🏆 **${selectedHorse.emoji} ${selectedHorse.name} wins!** What a run!`
+        : runnerUpRefund
+          ? `🥈 **${selectedHorse.emoji} ${selectedHorse.name}** finished second — half your bet refunded.`
+          : `💨 **${winningHorse.emoji} ${winningHorse.name}** takes it. Better luck next race.`;
+
+      const finalEmbed = new EmbedBuilder()
+        .setTitle('🏁 Race Over')
+        .setColor(finalColor)
+        .setDescription(finalStatus)
+        .addFields({ name: 'Final Standings', value: finalTrack, inline: false });
+
+      if (settleOutcome) {
+        finalEmbed.addFields(
+          { name: 'Payout', value: `${settleOutcome.payout} coins`, inline: true },
+          { name: 'Balance', value: `${settleOutcome.newCoins} coins`, inline: true },
+        );
+      } else {
+        finalEmbed.addFields({ name: '⚠️ Error', value: 'Could not settle bet. Please contact an admin.', inline: false });
+      }
+
+      await interaction.editReply({ embeds: [finalEmbed], components: getHorseRaceButtons(gameKey, true) });
       return;
     }
 
