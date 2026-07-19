@@ -547,7 +547,7 @@ function formatPokerCard(card) {
 
 function formatPokerHand(hand, held = new Set()) {
   return hand
-    .map((card, index) => `${index + 1}:${formatPokerCard(card)}${held.has(index) ? ' [HELD]' : ''}`)
+    .map((card, index) => `[${index + 1}] ${formatPokerCard(card)}${held.has(index) ? ' ✅' : ''}`)
     .join('  ');
 }
 
