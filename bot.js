@@ -703,6 +703,87 @@ function schedulePokerTimeout(game) {
   }, POKER_TIMEOUT_MS);
 }
 
+const BIRTHDAY_MONTH_NAMES = {
+  january: 1, jan: 1, february: 2, feb: 2, march: 3, mar: 3,
+  april: 4, apr: 4, may: 5, june: 6, jun: 6, july: 7, jul: 7,
+  august: 8, aug: 8, september: 9, sep: 9, sept: 9, october: 10, oct: 10,
+  november: 11, nov: 11, december: 12, dec: 12,
+};
+
+function parseDateFromText(text) {
+  // MM/DD or MM/DD/YY or MM/DD/YYYY
+  const slashMatch = text.match(/\b(\d{1,2})\/(\d{1,2})(?:\/\d{2,4})?\b/);
+  if (slashMatch) {
+    const month = parseInt(slashMatch[1], 10);
+    const day = parseInt(slashMatch[2], 10);
+    if (month >= 1 && month <= 12 && day >= 1 && day <= 31) return { month, day };
+  }
+
+  const monthPattern = Object.keys(BIRTHDAY_MONTH_NAMES).join('|');
+
+  // "July 10" or "July 10th"
+  const nameFirstMatch = text.toLowerCase().match(
+    new RegExp(`\\b(${monthPattern})\\b[\\s,.-]*(\\d{1,2})(?:st|nd|rd|th)?\\b`),
+  );
+  if (nameFirstMatch) {
+    const month = BIRTHDAY_MONTH_NAMES[nameFirstMatch[1]];
+    const day = parseInt(nameFirstMatch[2], 10);
+    if (day >= 1 && day <= 31) return { month, day };
+  }
+
+  // "10 July" or "10th July"
+  const nameLastMatch = text.toLowerCase().match(
+    new RegExp(`\\b(\\d{1,2})(?:st|nd|rd|th)?[\\s,.-]*(${monthPattern})\\b`),
+  );
+  if (nameLastMatch) {
+    const day = parseInt(nameLastMatch[1], 10);
+    const month = BIRTHDAY_MONTH_NAMES[nameLastMatch[2]];
+    if (day >= 1 && day <= 31) return { month, day };
+  }
+
+  return null;
+}
+
+async function scanBirthdayChannel(guild, channelId) {
+  const channel = guild.channels.cache.get(channelId);
+  if (!channel || !channel.isTextBased()) return { success: false, error: 'Channel not found or not a text channel.' };
+
+  let parsed = 0;
+  let skipped = 0;
+  let lastId;
+
+  for (;;) {
+    const options = { limit: 100 };
+    if (lastId) options.before = lastId;
+
+    const messages = await channel.messages.fetch(options).catch(() => null);
+    if (!messages || messages.size === 0) break;
+
+    for (const msg of messages.values()) {
+      const mentionMatch = msg.content.match(/<@!?(\d+)>/);
+      if (!mentionMatch) { skipped += 1; continue; }
+      const userId = mentionMatch[1];
+
+      const dateInfo = parseDateFromText(msg.content);
+      if (!dateInfo) { skipped += 1; continue; }
+
+      await new Promise((resolve) => {
+        db.run(
+          'INSERT OR REPLACE INTO birthdays (guild_id, user_id, birthday_month, birthday_day) VALUES (?, ?, ?, ?)',
+          [guild.id, userId, dateInfo.month, dateInfo.day],
+          resolve,
+        );
+      });
+      parsed += 1;
+    }
+
+    lastId = messages.last()?.id;
+    if (messages.size < 100) break;
+  }
+
+  return { success: true, parsed, skipped };
+}
+
 function getCurrentMonth() {
   const now = new Date();
   return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
@@ -1008,6 +1089,20 @@ db.serialize(() => {
     is_equipped INTEGER DEFAULT 0,
     UNIQUE(guild_id, user_id, cosmetic_id),
     FOREIGN KEY (cosmetic_id) REFERENCES cosmetics_shop(id)
+  )`);
+
+  db.run(`CREATE TABLE IF NOT EXISTS birthdays (
+    guild_id TEXT NOT NULL,
+    user_id TEXT NOT NULL,
+    birthday_month INTEGER NOT NULL,
+    birthday_day INTEGER NOT NULL,
+    PRIMARY KEY (guild_id, user_id)
+  )`);
+
+  db.run(`CREATE TABLE IF NOT EXISTS guild_config (
+    guild_id TEXT PRIMARY KEY,
+    birthday_channel_id TEXT,
+    birthday_announce_channel_id TEXT
   )`);
 
   db.all(`PRAGMA table_info(cosmetics_shop)`, (tableErr, rows = []) => {
@@ -1406,6 +1501,44 @@ client.once('clientReady', async () => {
       .addSubcommand(sub =>
         sub.setName('view')
           .setDescription('View recent match comments')),
+    new SlashCommandBuilder()
+      .setName('birthday')
+      .setDescription('Birthday system — set up, scan, and manage member birthdays')
+      .addSubcommand(sub =>
+        sub.setName('setup')
+          .setDescription('(Admin) Set the birthday list channel and the announce channel')
+          .addChannelOption(opt =>
+            opt.setName('birthday_channel')
+              .setDescription('Channel where members post their birthdays')
+              .setRequired(true))
+          .addChannelOption(opt =>
+            opt.setName('announce_channel')
+              .setDescription('Channel where the bot will post happy birthday messages')
+              .setRequired(true)))
+      .addSubcommand(sub =>
+        sub.setName('scan')
+          .setDescription('(Admin) Read the birthday channel and auto-import all birthdays it can find'))
+      .addSubcommand(sub =>
+        sub.setName('set')
+          .setDescription('(Admin) Manually add or update a member\'s birthday')
+          .addUserOption(opt =>
+            opt.setName('user')
+              .setDescription('The member')
+              .setRequired(true))
+          .addStringOption(opt =>
+            opt.setName('date')
+              .setDescription('Birthday as MM/DD (e.g. 7/10 for July 10th)')
+              .setRequired(true)))
+      .addSubcommand(sub =>
+        sub.setName('remove')
+          .setDescription('(Admin) Remove a member\'s birthday')
+          .addUserOption(opt =>
+            opt.setName('user')
+              .setDescription('The member')
+              .setRequired(true)))
+      .addSubcommand(sub =>
+        sub.setName('list')
+          .setDescription('Show all stored birthdays for this server')),
   ];
 
   slashCommands = commands;
@@ -3028,7 +3161,129 @@ client.on('interactionCreate', async interaction => {
     } else if (subcommand === 'view') {
       interaction.reply('Match comments feature coming soon!');
     }
+  } else if (commandName === 'birthday') {
+    const subcommand = interaction.options.getSubcommand();
+    const guildId = interaction.guild.id;
+    const isAdmin = interaction.member.permissions.has('Administrator');
+
+    if (subcommand === 'setup') {
+      if (!isAdmin) return interaction.reply({ content: '❌ Only admins can use this.', ephemeral: true });
+      const birthdayChannel = interaction.options.getChannel('birthday_channel');
+      const announceChannel = interaction.options.getChannel('announce_channel');
+      db.run(
+        'INSERT OR REPLACE INTO guild_config (guild_id, birthday_channel_id, birthday_announce_channel_id) VALUES (?, ?, ?)',
+        [guildId, birthdayChannel.id, announceChannel.id],
+        (err) => {
+          if (err) return interaction.reply({ content: '❌ Failed to save config.', ephemeral: true });
+          interaction.reply({
+            embeds: [new EmbedBuilder()
+              .setTitle('🎂 Birthday System Ready')
+              .setColor('#FF69B4')
+              .setDescription(`Birthday list: ${birthdayChannel}\nAnnounce channel: ${announceChannel}\n\nRun \`/birthday scan\` to import birthdays from the list channel.`)],
+          });
+        },
+      );
+
+    } else if (subcommand === 'scan') {
+      if (!isAdmin) return interaction.reply({ content: '❌ Only admins can use this.', ephemeral: true });
+      await interaction.deferReply();
+      db.get('SELECT birthday_channel_id FROM guild_config WHERE guild_id = ?', [guildId], async (err, row) => {
+        if (err || !row?.birthday_channel_id) {
+          return interaction.editReply('❌ No birthday channel set. Run `/birthday setup` first.');
+        }
+        const result = await scanBirthdayChannel(interaction.guild, row.birthday_channel_id);
+        if (!result.success) return interaction.editReply(`❌ Scan failed: ${result.error}`);
+        interaction.editReply({
+          embeds: [new EmbedBuilder()
+            .setTitle('🔍 Birthday Scan Complete')
+            .setColor('#FF69B4')
+            .addFields(
+              { name: '✅ Imported', value: `${result.parsed} birthdays`, inline: true },
+              { name: '⏭️ Skipped', value: `${result.skipped} messages (no mention or no date found)`, inline: true },
+            )
+            .setDescription('Run `/birthday list` to see what was imported, and `/birthday set` to manually add anyone who was missed.')],
+        });
+      });
+
+    } else if (subcommand === 'set') {
+      if (!isAdmin) return interaction.reply({ content: '❌ Only admins can use this.', ephemeral: true });
+      const targetUser = interaction.options.getUser('user');
+      const dateStr = interaction.options.getString('date');
+      const dateInfo = parseDateFromText(dateStr);
+      if (!dateInfo) {
+        return interaction.reply({ content: '❌ Could not read that date. Use MM/DD format, e.g. `7/10` for July 10th.', ephemeral: true });
+      }
+      const MONTH_NAMES_DISPLAY = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+      db.run(
+        'INSERT OR REPLACE INTO birthdays (guild_id, user_id, birthday_month, birthday_day) VALUES (?, ?, ?, ?)',
+        [guildId, targetUser.id, dateInfo.month, dateInfo.day],
+        (err) => {
+          if (err) return interaction.reply({ content: '❌ Failed to save birthday.', ephemeral: true });
+          interaction.reply({
+            embeds: [new EmbedBuilder()
+              .setColor('#FF69B4')
+              .setDescription(`🎂 Set **${targetUser.displayName || targetUser.username}**'s birthday to **${MONTH_NAMES_DISPLAY[dateInfo.month - 1]} ${dateInfo.day}**`)],
+          });
+        },
+      );
+
+    } else if (subcommand === 'remove') {
+      if (!isAdmin) return interaction.reply({ content: '❌ Only admins can use this.', ephemeral: true });
+      const targetUser = interaction.options.getUser('user');
+      db.run('DELETE FROM birthdays WHERE guild_id = ? AND user_id = ?', [guildId, targetUser.id], (err) => {
+        if (err) return interaction.reply({ content: '❌ Failed to remove birthday.', ephemeral: true });
+        interaction.reply({ content: `🗑️ Removed **${targetUser.displayName || targetUser.username}**'s birthday.`, ephemeral: true });
+      });
+
+    } else if (subcommand === 'list') {
+      db.all(
+        'SELECT user_id, birthday_month, birthday_day FROM birthdays WHERE guild_id = ? ORDER BY birthday_month, birthday_day',
+        [guildId],
+        (err, rows) => {
+          if (err || !rows?.length) {
+            return interaction.reply({ content: '📭 No birthdays stored yet. Run `/birthday scan` or use `/birthday set` to add some.', ephemeral: true });
+          }
+          const MONTH_NAMES_DISPLAY = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+          const lines = rows.map((r) => `<@${r.user_id}> — ${MONTH_NAMES_DISPLAY[r.birthday_month - 1]} ${r.birthday_day}`);
+          const chunks = [];
+          for (let i = 0; i < lines.length; i += 20) chunks.push(lines.slice(i, i + 20).join('\n'));
+          const embed = new EmbedBuilder()
+            .setTitle(`🎂 Birthdays (${rows.length} total)`)
+            .setColor('#FF69B4')
+            .setDescription(chunks[0]);
+          interaction.reply({ embeds: [embed], ephemeral: false });
+        },
+      );
+    }
   }
+});
+
+// Daily birthday check — runs at 9:00am every day
+cron.schedule('0 9 * * *', async () => {
+  const now = new Date();
+  const month = now.getMonth() + 1;
+  const day = now.getDate();
+
+  db.all(
+    'SELECT b.guild_id, b.user_id, gc.birthday_announce_channel_id FROM birthdays b JOIN guild_config gc ON b.guild_id = gc.guild_id WHERE b.birthday_month = ? AND b.birthday_day = ? AND gc.birthday_announce_channel_id IS NOT NULL',
+    [month, day],
+    async (err, rows) => {
+      if (err || !rows?.length) return;
+      for (const row of rows) {
+        const guild = client.guilds.cache.get(row.guild_id);
+        if (!guild) continue;
+        const channel = guild.channels.cache.get(row.birthday_announce_channel_id);
+        if (!channel?.isTextBased()) continue;
+        const embed = new EmbedBuilder()
+          .setTitle('🎂 Happy Birthday!')
+          .setColor('#FF69B4')
+          .setDescription(`🥳 Today is <@${row.user_id}>'s birthday! Everyone wish them a great one! 🎉🎈`);
+        channel.send({ content: `<@${row.user_id}>`, embeds: [embed] }).catch((e) => {
+          console.error('Birthday announcement error:', e);
+        });
+      }
+    },
+  );
 });
 
 cron.schedule('0 0 1 * *', () => {
