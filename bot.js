@@ -760,9 +760,8 @@ async function scanBirthdayChannel(guild, channelId) {
     if (!messages || messages.size === 0) break;
 
     for (const msg of messages.values()) {
-      const mentionMatch = msg.content.match(/<@!?(\d+)>/);
-      if (!mentionMatch) { skipped += 1; continue; }
-      const userId = mentionMatch[1];
+      if (msg.author.bot) { skipped += 1; continue; }
+      const userId = msg.author.id;
 
       const dateInfo = parseDateFromText(msg.content);
       if (!dateInfo) { skipped += 1; continue; }
