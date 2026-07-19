@@ -23,10 +23,7 @@ const client = new Client({
 
 let slashCommands = [];
 
-// Bump cooldown tracker (2 hours = 7200000 ms)
-const bumpCooldowns = new Map();
 const voiceXpCooldowns = new Map();
-const BUMP_COOLDOWN = 2 * 60 * 60 * 1000; // 2 hours in milliseconds
 
 const db = new sqlite3.Database(dbPath);
 
@@ -1445,9 +1442,6 @@ client.once('clientReady', async () => {
           .setDescription('Player to check')
           .setRequired(false)),
     new SlashCommandBuilder()
-      .setName('bump')
-      .setDescription('Bump the server on Disboard'),
-    new SlashCommandBuilder()
       .setName('bo1')
       .setDescription('Show the BO1 leaderboard or register for BO1')
       .addStringOption(option =>
@@ -2860,48 +2854,6 @@ client.on('interactionCreate', async interaction => {
         });
     });
 
-  } else if (commandName === 'bump') {
-    const userId = interaction.user.id;
-    const now = Date.now();
-    const lastBumpTime = bumpCooldowns.get(userId);
-
-    if (lastBumpTime) {
-      const timeSinceLastBump = now - lastBumpTime;
-      const remainingTime = BUMP_COOLDOWN - timeSinceLastBump;
-
-      if (remainingTime > 0) {
-        const hours = Math.floor(remainingTime / (60 * 60 * 1000));
-        const minutes = Math.floor((remainingTime % (60 * 60 * 1000)) / (60 * 1000));
-        const seconds = Math.floor((remainingTime % (60 * 1000)) / 1000);
-
-        const timeStr = hours > 0
-          ? `${hours}h ${minutes}m ${seconds}s`
-          : minutes > 0
-            ? `${minutes}m ${seconds}s`
-            : `${seconds}s`;
-
-        return interaction.reply({
-          content: `⏳ You can't bump again yet! Try again in **${timeStr}**`,
-          ephemeral: true,
-        });
-      }
-    }
-
-    bumpCooldowns.set(userId, now);
-
-    const embed = new EmbedBuilder()
-      .setTitle('🚀 Bump the Server!')
-      .setColor(0xFF6347)
-      .setDescription(`${interaction.user.username} has bumped The Hideout! 📈\n\nThanks for helping us grow!`);
-
-    const channel = interaction.guild.channels.cache.find(ch => ch.name === 'bump');
-    if (channel) {
-      channel.send({ embeds: [embed] }).catch(err => {
-        console.error('Error sending bump announcement:', err);
-      });
-    }
-
-    interaction.reply({ content: 'Thanks for bumping The Hideout! 🎉', ephemeral: true });
   } else if (commandName === 'shop') {
     const subcommand = interaction.options.getSubcommand();
 
