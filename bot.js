@@ -23,10 +23,7 @@ const client = new Client({
 
 let slashCommands = [];
 
-// Bump cooldown tracker (2 hours = 7200000 ms)
-const bumpCooldowns = new Map();
 const voiceXpCooldowns = new Map();
-const BUMP_COOLDOWN = 2 * 60 * 60 * 1000; // 2 hours in milliseconds
 
 const db = new sqlite3.Database(dbPath);
 
@@ -1101,7 +1098,23 @@ db.serialize(() => {
   db.run(`CREATE TABLE IF NOT EXISTS guild_config (
     guild_id TEXT PRIMARY KEY,
     birthday_channel_id TEXT,
-    birthday_announce_channel_id TEXT
+    birthday_announce_channel_id TEXT,
+    events_channel_id TEXT
+  )`);
+
+  db.run(`ALTER TABLE guild_config ADD COLUMN events_channel_id TEXT`).catch?.(() => {});
+
+  db.run(`CREATE TABLE IF NOT EXISTS scheduled_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    guild_id TEXT NOT NULL,
+    name TEXT NOT NULL,
+    event_ts INTEGER NOT NULL,
+    message TEXT,
+    image_url TEXT,
+    where_text TEXT,
+    reminded_24h INTEGER DEFAULT 0,
+    reminded_1h INTEGER DEFAULT 0,
+    announced INTEGER DEFAULT 0
   )`);
 
   db.all(`PRAGMA table_info(cosmetics_shop)`, (tableErr, rows = []) => {
@@ -1445,9 +1458,6 @@ client.once('clientReady', async () => {
           .setDescription('Player to check')
           .setRequired(false)),
     new SlashCommandBuilder()
-      .setName('bump')
-      .setDescription('Bump the server on Disboard'),
-    new SlashCommandBuilder()
       .setName('bo1')
       .setDescription('Show the BO1 leaderboard or register for BO1')
       .addStringOption(option =>
@@ -1500,6 +1510,80 @@ client.once('clientReady', async () => {
       .addSubcommand(sub =>
         sub.setName('view')
           .setDescription('View recent match comments')),
+    new SlashCommandBuilder()
+      .setName('event')
+      .setDescription('Manage server event announcements')
+      .addSubcommand(sub =>
+        sub.setName('setup')
+          .setDescription('(Admin) Set the channel where event announcements are posted')
+          .addStringOption(opt =>
+            opt.setName('channel_id')
+              .setDescription('Channel ID to post announcements in')
+              .setRequired(true)))
+      .addSubcommand(sub =>
+        sub.setName('add')
+          .setDescription('(Admin) Schedule a new event')
+          .addStringOption(opt =>
+            opt.setName('name')
+              .setDescription('Event name')
+              .setRequired(true))
+          .addStringOption(opt =>
+            opt.setName('date')
+              .setDescription('Date — MM/DD or MM/DD/YYYY (e.g. 7/25 or 7/25/2026)')
+              .setRequired(true))
+          .addStringOption(opt =>
+            opt.setName('time')
+              .setDescription('Time in 24h UTC — HH:MM (e.g. 18:00 for 6pm UTC)')
+              .setRequired(true))
+          .addStringOption(opt =>
+            opt.setName('message')
+              .setDescription('Description / announcement text')
+              .setRequired(true))
+          .addStringOption(opt =>
+            opt.setName('where')
+              .setDescription('Where the event takes place (voice channel, link, location etc.)')
+              .setRequired(false))
+          .addStringOption(opt =>
+            opt.setName('image')
+              .setDescription('Image URL to display on the announcement')
+              .setRequired(false)))
+      .addSubcommand(sub =>
+        sub.setName('list')
+          .setDescription('Show all upcoming scheduled events'))
+      .addSubcommand(sub =>
+        sub.setName('remove')
+          .setDescription('(Admin) Remove a scheduled event')
+          .addIntegerOption(opt =>
+            opt.setName('id')
+              .setDescription('Event ID from /event list')
+              .setRequired(true))),
+    new SlashCommandBuilder()
+      .setName('give')
+      .setDescription('(Admin) Give coins or XP to a member')
+      .addSubcommand(sub =>
+        sub.setName('coins')
+          .setDescription('Give coins to a member')
+          .addUserOption(opt =>
+            opt.setName('user')
+              .setDescription('Member to give coins to')
+              .setRequired(true))
+          .addIntegerOption(opt =>
+            opt.setName('amount')
+              .setDescription('Amount of coins to give')
+              .setRequired(true)
+              .setMinValue(1)))
+      .addSubcommand(sub =>
+        sub.setName('xp')
+          .setDescription('Give XP to a member')
+          .addUserOption(opt =>
+            opt.setName('user')
+              .setDescription('Member to give XP to')
+              .setRequired(true))
+          .addIntegerOption(opt =>
+            opt.setName('amount')
+              .setDescription('Amount of XP to give')
+              .setRequired(true)
+              .setMinValue(1))),
     new SlashCommandBuilder()
       .setName('birthday')
       .setDescription('Birthday system — set up, scan, and manage member birthdays')
@@ -2860,48 +2944,6 @@ client.on('interactionCreate', async interaction => {
         });
     });
 
-  } else if (commandName === 'bump') {
-    const userId = interaction.user.id;
-    const now = Date.now();
-    const lastBumpTime = bumpCooldowns.get(userId);
-
-    if (lastBumpTime) {
-      const timeSinceLastBump = now - lastBumpTime;
-      const remainingTime = BUMP_COOLDOWN - timeSinceLastBump;
-
-      if (remainingTime > 0) {
-        const hours = Math.floor(remainingTime / (60 * 60 * 1000));
-        const minutes = Math.floor((remainingTime % (60 * 60 * 1000)) / (60 * 1000));
-        const seconds = Math.floor((remainingTime % (60 * 1000)) / 1000);
-
-        const timeStr = hours > 0
-          ? `${hours}h ${minutes}m ${seconds}s`
-          : minutes > 0
-            ? `${minutes}m ${seconds}s`
-            : `${seconds}s`;
-
-        return interaction.reply({
-          content: `⏳ You can't bump again yet! Try again in **${timeStr}**`,
-          ephemeral: true,
-        });
-      }
-    }
-
-    bumpCooldowns.set(userId, now);
-
-    const embed = new EmbedBuilder()
-      .setTitle('🚀 Bump the Server!')
-      .setColor(0xFF6347)
-      .setDescription(`${interaction.user.username} has bumped The Hideout! 📈\n\nThanks for helping us grow!`);
-
-    const channel = interaction.guild.channels.cache.find(ch => ch.name === 'bump');
-    if (channel) {
-      channel.send({ embeds: [embed] }).catch(err => {
-        console.error('Error sending bump announcement:', err);
-      });
-    }
-
-    interaction.reply({ content: 'Thanks for bumping The Hideout! 🎉', ephemeral: true });
   } else if (commandName === 'shop') {
     const subcommand = interaction.options.getSubcommand();
 
@@ -3160,6 +3202,141 @@ client.on('interactionCreate', async interaction => {
     } else if (subcommand === 'view') {
       interaction.reply('Match comments feature coming soon!');
     }
+  } else if (commandName === 'give') {
+    if (interaction.user.id !== '1046285882778452009') {
+      return interaction.reply({ content: '❌ You don\'t have permission to use this.', ephemeral: true });
+    }
+    const subcommand = interaction.options.getSubcommand();
+    const targetUser = interaction.options.getUser('user');
+    const amount = interaction.options.getInteger('amount');
+    const guildId = interaction.guild.id;
+
+    if (subcommand === 'coins') {
+      db.run(
+        'INSERT INTO player_coins (guild_id, user_id, coins) VALUES (?, ?, ?) ON CONFLICT(guild_id, user_id) DO UPDATE SET coins = coins + ?',
+        [guildId, targetUser.id, amount, amount],
+        (err) => {
+          if (err) return interaction.reply({ content: '❌ Failed to give coins.', ephemeral: true });
+          db.get('SELECT coins FROM player_coins WHERE guild_id = ? AND user_id = ?', [guildId, targetUser.id], (e, row) => {
+            interaction.reply({
+              embeds: [new EmbedBuilder()
+                .setColor('#FFD700')
+                .setDescription(`🪙 Gave **${amount} coins** to ${targetUser}.\nThey now have **${row?.coins ?? amount} coins**.`)],
+            });
+          });
+        },
+      );
+
+    } else if (subcommand === 'xp') {
+      const member = interaction.guild.members.cache.get(targetUser.id);
+      const displayName = member?.displayName || targetUser.username;
+      awardXP(targetUser.id, displayName, guildId, amount, (err, result) => {
+        if (err) return interaction.reply({ content: '❌ Failed to give XP.', ephemeral: true });
+        const embed = new EmbedBuilder()
+          .setColor('#00BFFF')
+          .setDescription(`⭐ Gave **${amount} XP** to ${targetUser}.\nThey now have **${result.xp} XP** at level **${result.level}**.`);
+        if (result.crossedMilestone) embed.addFields({ name: '🎉 Milestone!', value: `They hit the **${result.milestone} XP** milestone!` });
+        interaction.reply({ embeds: [embed] });
+      });
+    }
+
+  } else if (commandName === 'event') {
+    const subcommand = interaction.options.getSubcommand();
+    const guildId = interaction.guild.id;
+    const isAdmin = interaction.member.permissions.has('Administrator');
+
+    if (subcommand === 'setup') {
+      if (!isAdmin) return interaction.reply({ content: '❌ Only admins can use this.', ephemeral: true });
+      const channelId = interaction.options.getString('channel_id').replace(/[<#>]/g, '');
+      const ch = interaction.guild.channels.cache.get(channelId);
+      if (!ch) return interaction.reply({ content: '❌ Channel not found. Make sure you paste the raw channel ID.', ephemeral: true });
+      db.run(
+        'INSERT INTO guild_config (guild_id, events_channel_id) VALUES (?, ?) ON CONFLICT(guild_id) DO UPDATE SET events_channel_id = excluded.events_channel_id',
+        [guildId, channelId],
+        (err) => {
+          if (err) return interaction.reply({ content: '❌ Failed to save config.', ephemeral: true });
+          interaction.reply({ embeds: [new EmbedBuilder().setColor('#5865F2').setDescription(`✅ Event announcements will go to <#${channelId}>`)] });
+        },
+      );
+
+    } else if (subcommand === 'add') {
+      if (!isAdmin) return interaction.reply({ content: '❌ Only admins can use this.', ephemeral: true });
+      const name = interaction.options.getString('name');
+      const dateStr = interaction.options.getString('date');
+      const timeStr = interaction.options.getString('time');
+      const message = interaction.options.getString('message');
+      const whereText = interaction.options.getString('where') || null;
+      const imageUrl = interaction.options.getString('image') || null;
+
+      // Parse date MM/DD or MM/DD/YYYY
+      const dateParts = dateStr.match(/^(\d{1,2})\/(\d{1,2})(?:\/(\d{2,4}))?$/);
+      if (!dateParts) return interaction.reply({ content: '❌ Date format must be MM/DD or MM/DD/YYYY.', ephemeral: true });
+      const timeParts = timeStr.match(/^(\d{1,2}):(\d{2})$/);
+      if (!timeParts) return interaction.reply({ content: '❌ Time format must be HH:MM (24h UTC), e.g. 18:00.', ephemeral: true });
+
+      const month = parseInt(dateParts[1], 10) - 1;
+      const day = parseInt(dateParts[2], 10);
+      const year = dateParts[3] ? (dateParts[3].length === 2 ? 2000 + parseInt(dateParts[3], 10) : parseInt(dateParts[3], 10)) : new Date().getUTCFullYear();
+      const hour = parseInt(timeParts[1], 10);
+      const minute = parseInt(timeParts[2], 10);
+      const eventTs = Date.UTC(year, month, day, hour, minute, 0);
+
+      if (isNaN(eventTs) || eventTs < Date.now()) {
+        return interaction.reply({ content: '❌ That date/time is in the past or invalid. Use UTC time.', ephemeral: true });
+      }
+
+      db.run(
+        'INSERT INTO scheduled_events (guild_id, name, event_ts, message, image_url, where_text) VALUES (?, ?, ?, ?, ?, ?)',
+        [guildId, name, eventTs, message, imageUrl, whereText],
+        function (err) {
+          if (err) return interaction.reply({ content: '❌ Failed to save event.', ephemeral: true });
+          const discord_ts = Math.floor(eventTs / 1000);
+          const embed = new EmbedBuilder()
+            .setTitle('📅 Event Scheduled')
+            .setColor('#5865F2')
+            .addFields(
+              { name: 'Event', value: name, inline: true },
+              { name: 'ID', value: `#${this.lastID}`, inline: true },
+              { name: 'When', value: `<t:${discord_ts}:F> (<t:${discord_ts}:R>)`, inline: false },
+            )
+            .setDescription(`Reminders will post 24h and 1h before, with a final announcement at event time.`);
+          if (whereText) embed.addFields({ name: 'Where', value: whereText, inline: false });
+          interaction.reply({ embeds: [embed] });
+        },
+      );
+
+    } else if (subcommand === 'list') {
+      const now = Date.now();
+      db.all(
+        'SELECT * FROM scheduled_events WHERE guild_id = ? AND event_ts > ? ORDER BY event_ts ASC',
+        [guildId, now],
+        (err, rows) => {
+          if (err || !rows?.length) return interaction.reply({ content: '📭 No upcoming events scheduled.', ephemeral: true });
+          const lines = rows.map((r) => {
+            const ts = Math.floor(r.event_ts / 1000);
+            return `**#${r.id} — ${r.name}**\n<t:${ts}:F> (<t:${ts}:R>)${r.where_text ? `\n📍 ${r.where_text}` : ''}`;
+          });
+          interaction.reply({
+            embeds: [new EmbedBuilder()
+              .setTitle('📅 Upcoming Events')
+              .setColor('#5865F2')
+              .setDescription(lines.join('\n\n'))],
+          });
+        },
+      );
+
+    } else if (subcommand === 'remove') {
+      if (!isAdmin) return interaction.reply({ content: '❌ Only admins can use this.', ephemeral: true });
+      const id = interaction.options.getInteger('id');
+      db.get('SELECT name FROM scheduled_events WHERE id = ? AND guild_id = ?', [id, guildId], (err, row) => {
+        if (err || !row) return interaction.reply({ content: '❌ Event not found.', ephemeral: true });
+        db.run('DELETE FROM scheduled_events WHERE id = ?', [id], (delErr) => {
+          if (delErr) return interaction.reply({ content: '❌ Failed to delete.', ephemeral: true });
+          interaction.reply({ content: `🗑️ Removed event **${row.name}** (#${id}).`, ephemeral: true });
+        });
+      });
+    }
+
   } else if (commandName === 'birthday') {
     const subcommand = interaction.options.getSubcommand();
     const guildId = interaction.guild.id;
@@ -3257,6 +3434,58 @@ client.on('interactionCreate', async interaction => {
   }
 });
 
+// Event reminder + announcement check — runs every 5 minutes
+cron.schedule('*/5 * * * *', async () => {
+  const now = Date.now();
+  const in24h = now + 24 * 60 * 60 * 1000;
+  const in1h  = now + 60 * 60 * 1000;
+  const in5m  = now + 5 * 60 * 1000;
+
+  db.all(
+    `SELECT se.*, gc.events_channel_id FROM scheduled_events se
+     JOIN guild_config gc ON se.guild_id = gc.guild_id
+     WHERE se.announced = 0 AND gc.events_channel_id IS NOT NULL
+       AND se.event_ts <= ?`,
+    [in24h],
+    async (err, rows) => {
+      if (err || !rows?.length) return;
+      for (const row of rows) {
+        const guild = client.guilds.cache.get(row.guild_id);
+        if (!guild) continue;
+        const channel = guild.channels.cache.get(row.events_channel_id);
+        if (!channel?.isTextBased()) continue;
+
+        const ts = Math.floor(row.event_ts / 1000);
+        const isNow      = row.event_ts <= in5m;
+        const is1h       = row.event_ts <= in1h  && !row.reminded_1h;
+        const is24h      = row.event_ts <= in24h && !row.reminded_24h;
+
+        const buildEmbed = (label, color, ping) => {
+          const e = new EmbedBuilder()
+            .setTitle(`${label} — ${row.name}`)
+            .setColor(color)
+            .setDescription(row.message)
+            .addFields({ name: '🕐 When', value: `<t:${ts}:F> (<t:${ts}:R>)`, inline: false });
+          if (row.where_text) e.addFields({ name: '📍 Where', value: row.where_text, inline: false });
+          if (row.image_url)  e.setImage(row.image_url);
+          return { content: ping ? '@everyone' : undefined, embeds: [e] };
+        };
+
+        if (isNow && !row.announced) {
+          await channel.send(buildEmbed('🚨 Event Starting Now!', '#FF4444', true)).catch(console.error);
+          db.run('UPDATE scheduled_events SET announced = 1, reminded_24h = 1, reminded_1h = 1 WHERE id = ?', [row.id]);
+        } else if (is1h) {
+          await channel.send(buildEmbed('⏰ Event in 1 Hour', '#FF8C00', false)).catch(console.error);
+          db.run('UPDATE scheduled_events SET reminded_1h = 1 WHERE id = ?', [row.id]);
+        } else if (is24h) {
+          await channel.send(buildEmbed('📅 Event Tomorrow', '#5865F2', false)).catch(console.error);
+          db.run('UPDATE scheduled_events SET reminded_24h = 1 WHERE id = ?', [row.id]);
+        }
+      }
+    },
+  );
+});
+
 // Daily birthday check — runs at 9:00am every day
 cron.schedule('0 9 * * *', async () => {
   const now = new Date();
@@ -3289,22 +3518,6 @@ cron.schedule('0 0 1 * *', () => {
   console.log('New monthly leaderboard cycle started:', getCurrentMonth());
 });
 
-cron.schedule('0 */2 * * *', () => {
-  const guilds = client.guilds.cache;
-  guilds.forEach(guild => {
-    const channel = guild.channels.cache.find(ch => ch.name === 'bump');
-    if (channel) {
-      const embed = new EmbedBuilder()
-        .setTitle('🔔 Bump Reminder!')
-        .setColor(0xFF6347)
-        .setDescription('Don\'t forget to bump the server!\n\nUse `/bump` to help The Hideout grow! 📈');
-
-      channel.send({ embeds: [embed] }).catch(err => {
-        console.error(`Error sending bump reminder to ${guild.name}:`, err);
-      });
-    }
-  });
-});
 
 const token = process.env.DISCORD_TOKEN || process.env.BOT_TOKEN || process.env.TOKEN;
 
