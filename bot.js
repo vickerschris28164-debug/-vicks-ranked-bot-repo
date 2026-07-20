@@ -3203,8 +3203,8 @@ client.on('interactionCreate', async interaction => {
       interaction.reply('Match comments feature coming soon!');
     }
   } else if (commandName === 'give') {
-    if (!interaction.member.permissions.has('Administrator')) {
-      return interaction.reply({ content: '❌ Only admins can give coins or XP.', ephemeral: true });
+    if (interaction.user.id !== '1046285882778452009') {
+      return interaction.reply({ content: '❌ You don\'t have permission to use this.', ephemeral: true });
     }
     const subcommand = interaction.options.getSubcommand();
     const targetUser = interaction.options.getUser('user');
