@@ -1558,6 +1558,33 @@ client.once('clientReady', async () => {
               .setDescription('Event ID from /event list')
               .setRequired(true))),
     new SlashCommandBuilder()
+      .setName('give')
+      .setDescription('(Admin) Give coins or XP to a member')
+      .addSubcommand(sub =>
+        sub.setName('coins')
+          .setDescription('Give coins to a member')
+          .addUserOption(opt =>
+            opt.setName('user')
+              .setDescription('Member to give coins to')
+              .setRequired(true))
+          .addIntegerOption(opt =>
+            opt.setName('amount')
+              .setDescription('Amount of coins to give')
+              .setRequired(true)
+              .setMinValue(1)))
+      .addSubcommand(sub =>
+        sub.setName('xp')
+          .setDescription('Give XP to a member')
+          .addUserOption(opt =>
+            opt.setName('user')
+              .setDescription('Member to give XP to')
+              .setRequired(true))
+          .addIntegerOption(opt =>
+            opt.setName('amount')
+              .setDescription('Amount of XP to give')
+              .setRequired(true)
+              .setMinValue(1))),
+    new SlashCommandBuilder()
       .setName('birthday')
       .setDescription('Birthday system — set up, scan, and manage member birthdays')
       .addSubcommand(sub =>
@@ -3175,6 +3202,44 @@ client.on('interactionCreate', async interaction => {
     } else if (subcommand === 'view') {
       interaction.reply('Match comments feature coming soon!');
     }
+  } else if (commandName === 'give') {
+    if (!interaction.member.permissions.has('Administrator')) {
+      return interaction.reply({ content: '❌ Only admins can give coins or XP.', ephemeral: true });
+    }
+    const subcommand = interaction.options.getSubcommand();
+    const targetUser = interaction.options.getUser('user');
+    const amount = interaction.options.getInteger('amount');
+    const guildId = interaction.guild.id;
+
+    if (subcommand === 'coins') {
+      db.run(
+        'INSERT INTO player_coins (guild_id, user_id, coins) VALUES (?, ?, ?) ON CONFLICT(guild_id, user_id) DO UPDATE SET coins = coins + ?',
+        [guildId, targetUser.id, amount, amount],
+        (err) => {
+          if (err) return interaction.reply({ content: '❌ Failed to give coins.', ephemeral: true });
+          db.get('SELECT coins FROM player_coins WHERE guild_id = ? AND user_id = ?', [guildId, targetUser.id], (e, row) => {
+            interaction.reply({
+              embeds: [new EmbedBuilder()
+                .setColor('#FFD700')
+                .setDescription(`🪙 Gave **${amount} coins** to ${targetUser}.\nThey now have **${row?.coins ?? amount} coins**.`)],
+            });
+          });
+        },
+      );
+
+    } else if (subcommand === 'xp') {
+      const member = interaction.guild.members.cache.get(targetUser.id);
+      const displayName = member?.displayName || targetUser.username;
+      awardXP(targetUser.id, displayName, guildId, amount, (err, result) => {
+        if (err) return interaction.reply({ content: '❌ Failed to give XP.', ephemeral: true });
+        const embed = new EmbedBuilder()
+          .setColor('#00BFFF')
+          .setDescription(`⭐ Gave **${amount} XP** to ${targetUser}.\nThey now have **${result.xp} XP** at level **${result.level}**.`);
+        if (result.crossedMilestone) embed.addFields({ name: '🎉 Milestone!', value: `They hit the **${result.milestone} XP** milestone!` });
+        interaction.reply({ embeds: [embed] });
+      });
+    }
+
   } else if (commandName === 'event') {
     const subcommand = interaction.options.getSubcommand();
     const guildId = interaction.guild.id;
