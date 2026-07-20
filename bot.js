@@ -1102,7 +1102,7 @@ db.serialize(() => {
     events_channel_id TEXT
   )`);
 
-  db.run(`ALTER TABLE guild_config ADD COLUMN events_channel_id TEXT`).catch?.(() => {});
+  db.run(`ALTER TABLE guild_config ADD COLUMN events_channel_id TEXT`, () => {});
 
   db.run(`CREATE TABLE IF NOT EXISTS scheduled_events (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
