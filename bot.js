@@ -4,6 +4,8 @@ const cron = require('node-cron');
 const path = require('path');
 const fs = require('fs');
 const { registerSlashCommands } = require('./command-registration');
+const { isSelfPromotion } = require('./self-promotion');
+const { parseWeekdayList, computeNextOccurrence } = require('./event-scheduler');
 require('dotenv').config();
 
 // Ensure database directory exists
@@ -1117,6 +1119,19 @@ db.serialize(() => {
     announced INTEGER DEFAULT 0
   )`);
 
+  db.run(`CREATE TABLE IF NOT EXISTS recurring_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    guild_id TEXT NOT NULL,
+    name TEXT NOT NULL,
+    days_of_week TEXT NOT NULL,
+    time_utc TEXT NOT NULL,
+    message TEXT,
+    image_url TEXT,
+    where_text TEXT,
+    next_run_at INTEGER NOT NULL,
+    enabled INTEGER DEFAULT 1
+  )`);
+
   db.all(`PRAGMA table_info(cosmetics_shop)`, (tableErr, rows = []) => {
     if (tableErr) {
       return console.error('Cosmetics shop table info error:', tableErr);
@@ -1548,14 +1563,51 @@ client.once('clientReady', async () => {
               .setDescription('Image URL to display on the announcement')
               .setRequired(false)))
       .addSubcommand(sub =>
+        sub.setName('add_recurring')
+          .setDescription('(Admin) Schedule a recurring weekly event (example: Mon/Wed/Fri at 18:00 UTC)')
+          .addStringOption(opt =>
+            opt.setName('name')
+              .setDescription('Event name')
+              .setRequired(true))
+          .addStringOption(opt =>
+            opt.setName('days')
+              .setDescription('Days of the week, like mon,wed,fri or monday,wednesday,friday')
+              .setRequired(true))
+          .addStringOption(opt =>
+            opt.setName('time')
+              .setDescription('Time in 24h UTC — HH:MM (e.g. 18:00)')
+              .setRequired(true))
+          .addStringOption(opt =>
+            opt.setName('message')
+              .setDescription('Description / announcement text')
+              .setRequired(true))
+          .addStringOption(opt =>
+            opt.setName('where')
+              .setDescription('Where the event takes place (voice channel, link, location etc.)')
+              .setRequired(false))
+          .addStringOption(opt =>
+            opt.setName('image')
+              .setDescription('Image URL to display on the announcement')
+              .setRequired(false)))
+      .addSubcommand(sub =>
         sub.setName('list')
           .setDescription('Show all upcoming scheduled events'))
+      .addSubcommand(sub =>
+        sub.setName('list_recurring')
+          .setDescription('Show all recurring weekly events'))
       .addSubcommand(sub =>
         sub.setName('remove')
           .setDescription('(Admin) Remove a scheduled event')
           .addIntegerOption(opt =>
             opt.setName('id')
               .setDescription('Event ID from /event list')
+              .setRequired(true)))
+      .addSubcommand(sub =>
+        sub.setName('remove_recurring')
+          .setDescription('(Admin) Remove a recurring event')
+          .addIntegerOption(opt =>
+            opt.setName('id')
+              .setDescription('Recurring event ID from /event list_recurring')
               .setRequired(true))),
     new SlashCommandBuilder()
       .setName('give')
@@ -1692,6 +1744,38 @@ client.on('guildMemberAdd', (member) => {
 client.on('messageCreate', (message) => {
   if (!message.guild || message.author.bot) return;
   if (!message.content || message.content.trim().length === 0) return;
+
+  if (isSelfPromotion(message.content)) {
+    const moderatorChannelId = process.env.MODERATOR_CHANNEL_ID;
+    const moderatorChannel = moderatorChannelId
+      ? message.guild.channels.cache.get(moderatorChannelId)
+      : null;
+
+    message.delete().catch((err) => {
+      console.error('Could not delete self-promotion message:', err);
+    });
+
+    if (!moderatorChannel) {
+      console.error('MODERATOR_CHANNEL_ID is not configured or the channel is unavailable.');
+      return;
+    }
+
+    moderatorChannel.send({
+      content: `🚨 Self-promotion blocked from ${message.author} in <#${message.channel.id}>`,
+      embeds: [new EmbedBuilder()
+        .setColor('#FF4444')
+        .setTitle('Self-promotion blocked')
+        .setDescription(message.content.slice(0, 4000))
+        .addFields(
+          { name: 'Member', value: `${message.author.tag} (${message.author.id})`, inline: true },
+          { name: 'Channel', value: `<#${message.channel.id}>`, inline: true },
+        )
+        .setTimestamp()],
+    }).catch((err) => {
+      console.error('Could not forward self-promotion message to moderators:', err);
+    });
+    return;
+  }
 
   awardXP(message.author.id, message.author.username, message.guild.id, 10, (err, result) => {
     if (err) return console.error('XP message award error:', err);
@@ -3325,6 +3409,73 @@ client.on('interactionCreate', async interaction => {
         },
       );
 
+    } else if (subcommand === 'add_recurring') {
+      if (!isAdmin) return interaction.reply({ content: '❌ Only admins can use this.', ephemeral: true });
+      const name = interaction.options.getString('name');
+      const daysInput = interaction.options.getString('days');
+      const timeStr = interaction.options.getString('time');
+      const message = interaction.options.getString('message');
+      const whereText = interaction.options.getString('where') || null;
+      const imageUrl = interaction.options.getString('image') || null;
+      const days = parseWeekdayList(daysInput);
+
+      if (!days.length) {
+        return interaction.reply({ content: '❌ Use day names like `mon, wed, fri` or `monday,wednesday,friday`.', ephemeral: true });
+      }
+
+      if (!/^\d{1,2}:\d{2}$/.test(timeStr)) {
+        return interaction.reply({ content: '❌ Time format must be HH:MM in 24h UTC.', ephemeral: true });
+      }
+
+      const nextRunAt = computeNextOccurrence(Date.now(), days, timeStr);
+      if (!nextRunAt) {
+        return interaction.reply({ content: '❌ I could not calculate a valid next run time. Try different days or a valid time.', ephemeral: true });
+      }
+
+      db.run(
+        'INSERT INTO recurring_events (guild_id, name, days_of_week, time_utc, message, image_url, where_text, next_run_at, enabled) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1)',
+        [guildId, name, days.join(','), timeStr, message, imageUrl, whereText, nextRunAt],
+        function (err) {
+          if (err) return interaction.reply({ content: '❌ Failed to save recurring event.', ephemeral: true });
+          const weekdayNames = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+          const dayLabel = days.map((day) => weekdayNames[day]).join(', ');
+          const embed = new EmbedBuilder()
+            .setTitle('🔁 Recurring Event Scheduled')
+            .setColor('#5B5CE6')
+            .addFields(
+              { name: 'Event', value: name, inline: true },
+              { name: 'ID', value: `#${this.lastID}`, inline: true },
+              { name: 'Days', value: dayLabel, inline: false },
+              { name: 'Time', value: `${timeStr} UTC`, inline: true },
+              { name: 'Next Run', value: `<t:${Math.floor(nextRunAt / 1000)}:F>`, inline: true },
+            );
+          if (whereText) embed.addFields({ name: 'Where', value: whereText, inline: false });
+          interaction.reply({ embeds: [embed] });
+        },
+      );
+
+    } else if (subcommand === 'list_recurring') {
+      db.all(
+        'SELECT * FROM recurring_events WHERE guild_id = ? AND enabled = 1 ORDER BY next_run_at ASC',
+        [guildId],
+        (err, rows) => {
+          if (err || !rows?.length) return interaction.reply({ content: '📭 No recurring weekly events scheduled.', ephemeral: true });
+          const weekdayNames = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+          const lines = rows.map((r) => {
+            const days = r.days_of_week.split(',').map((v) => Number(v)).filter((v) => !Number.isNaN(v));
+            const dayLabel = days.map((day) => weekdayNames[day]).join(', ');
+            const ts = Math.floor(r.next_run_at / 1000);
+            return `**#${r.id} — ${r.name}**\n📆 ${dayLabel}\n🕐 ${r.time_utc} UTC\n➡️ Next: <t:${ts}:F>${r.where_text ? `\n📍 ${r.where_text}` : ''}`;
+          });
+          interaction.reply({
+            embeds: [new EmbedBuilder()
+              .setTitle('🔁 Recurring Events')
+              .setColor('#5B5CE6')
+              .setDescription(lines.join('\n\n'))],
+          });
+        },
+      );
+
     } else if (subcommand === 'remove') {
       if (!isAdmin) return interaction.reply({ content: '❌ Only admins can use this.', ephemeral: true });
       const id = interaction.options.getInteger('id');
@@ -3333,6 +3484,17 @@ client.on('interactionCreate', async interaction => {
         db.run('DELETE FROM scheduled_events WHERE id = ?', [id], (delErr) => {
           if (delErr) return interaction.reply({ content: '❌ Failed to delete.', ephemeral: true });
           interaction.reply({ content: `🗑️ Removed event **${row.name}** (#${id}).`, ephemeral: true });
+        });
+      });
+
+    } else if (subcommand === 'remove_recurring') {
+      if (!isAdmin) return interaction.reply({ content: '❌ Only admins can use this.', ephemeral: true });
+      const id = interaction.options.getInteger('id');
+      db.get('SELECT name FROM recurring_events WHERE id = ? AND guild_id = ?', [id, guildId], (err, row) => {
+        if (err || !row) return interaction.reply({ content: '❌ Recurring event not found.', ephemeral: true });
+        db.run('DELETE FROM recurring_events WHERE id = ?', [id], (delErr) => {
+          if (delErr) return interaction.reply({ content: '❌ Failed to delete recurring event.', ephemeral: true });
+          interaction.reply({ content: `🗑️ Removed recurring event **${row.name}** (#${id}).`, ephemeral: true });
         });
       });
     }
@@ -3480,6 +3642,47 @@ cron.schedule('*/5 * * * *', async () => {
         } else if (is24h) {
           await channel.send(buildEmbed('📅 Event Tomorrow', '#5865F2', false)).catch(console.error);
           db.run('UPDATE scheduled_events SET reminded_24h = 1 WHERE id = ?', [row.id]);
+        }
+      }
+    },
+  );
+});
+
+cron.schedule('* * * * *', async () => {
+  const now = Date.now();
+  db.all(
+    `SELECT r.*, gc.events_channel_id FROM recurring_events r
+     JOIN guild_config gc ON r.guild_id = gc.guild_id
+     WHERE r.enabled = 1 AND r.next_run_at <= ?`,
+    [now],
+    async (err, rows) => {
+      if (err || !rows?.length) return;
+
+      for (const row of rows) {
+        const guild = client.guilds.cache.get(row.guild_id);
+        if (!guild) continue;
+        const channel = guild.channels.cache.get(row.events_channel_id);
+        if (!channel?.isTextBased()) continue;
+
+        const timestamp = Math.floor(row.next_run_at / 1000);
+        const days = parseWeekdayList(row.days_of_week);
+        const nextRun = computeNextOccurrence(row.next_run_at, days, row.time_utc);
+
+        const embed = new EmbedBuilder()
+          .setTitle(`📣 ${row.name}`)
+          .setColor('#5B5CE6')
+          .setDescription(row.message || 'Don\'t miss this event!')
+          .addFields({ name: '🕐 When', value: `<t:${timestamp}:F> (<t:${timestamp}:R>)`, inline: false });
+
+        if (row.where_text) embed.addFields({ name: '📍 Where', value: row.where_text, inline: false });
+        if (row.image_url) embed.setImage(row.image_url);
+
+        await channel.send({ content: '@everyone', embeds: [embed] }).catch(console.error);
+
+        if (nextRun) {
+          db.run('UPDATE recurring_events SET next_run_at = ? WHERE id = ?', [nextRun, row.id]);
+        } else {
+          db.run('UPDATE recurring_events SET enabled = 0 WHERE id = ?', [row.id]);
         }
       }
     },

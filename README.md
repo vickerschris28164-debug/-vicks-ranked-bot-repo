@@ -8,6 +8,7 @@ A Discord bot for managing ranked Pokémon TCG matches and monthly leaderboards 
 - Match reporting with winner/loser and ladder selection
 - Monthly leaderboard tracking for each ladder
 - Activity-based leveling from chat messages and voice time
+- Self-promotion messages are deleted and reported to the configured moderator channel
 - Automatic monthly reset on the 1st of each month
 - Admin commands to manually reset or adjust ladders
 
@@ -18,6 +19,7 @@ A Discord bot for managing ranked Pokémon TCG matches and monthly leaderboards 
 3. Create a `.env` file in the root directory with your Discord bot token:
    ```
    DISCORD_TOKEN=your_bot_token_here
+   MODERATOR_CHANNEL_ID=your_moderator_channel_id_here
    ```
 4. Run the bot: `npm start`
 
@@ -66,6 +68,15 @@ This bot is ready to deploy on any Node.js hosting platform:
 2. Create a new Web Service
 3. Set the build and start commands to use npm
 4. Add environment variables
+
+### Wispbyte
+1. Sign up / log in at [Wispbyte](https://wispbyte.com) and create a new server using the **Node.js** egg.
+2. In the server's file manager, upload this repository's files (or connect it via the panel's Git/SFTP support), excluding `node_modules` and `.env`.
+3. Set the egg's **Startup Command** to `npm install && node bot.js` (or `npm install && npm start`).
+4. In the **Startup** tab, set `NODE_VERSION` (or equivalent variable) to `18` or newer.
+5. In the **Variables/Environment** section, add `DISCORD_TOKEN` and `MODERATOR_CHANNEL_ID` with your values (do **not** upload your `.env` file).
+6. Start the server. Check the console for `Logged in as ...` to confirm the bot connected.
+7. If slash commands don't appear, restart the server once so `registerSlashCommands` runs again.
 
 ### Other Platforms (Heroku, Fly.io, etc.)
 - Ensure `npm start` is set as the start command
