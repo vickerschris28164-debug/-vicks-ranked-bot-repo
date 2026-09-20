@@ -2473,6 +2473,12 @@ client.on('interactionCreate', async interaction => {
         { name: '/poker amount:integer', value: 'Play interactive poker with hold-and-draw decisions.', inline: false },
         { name: '/roulette amount:integer', value: 'Play interactive roulette with multiple bet options (auto-cancels after inactivity).', inline: false },
         { name: '/horse_race amount:integer', value: 'Pick a horse with odds and run a race simulation.', inline: false },
+      );
+
+    const additionalHelp = new EmbedBuilder()
+      .setTitle('More Commands')
+      .setColor(0xFFD700)
+      .addFields(
         { name: '/history_list [ladder]', value: 'View all months with leaderboard data.', inline: false },
         { name: '/history month:YYYY-MM [ladder]', value: 'View leaderboard for a specific month.', inline: false },
         { name: '/player_history [player] [ladder]', value: 'View a player\'s stats across all months.', inline: false },
@@ -2484,7 +2490,7 @@ client.on('interactionCreate', async interaction => {
         { name: '/set_score player:@user points:number [ladder]', value: 'Set a player score manually (Admin only).', inline: false }
       );
 
-    interaction.reply({ embeds: [embed], ephemeral: true });
+    interaction.reply({ embeds: [embed, additionalHelp], ephemeral: true });
   } else if (commandName === 'reset_monthly') {
     if (!interaction.member.permissions.has('Administrator')) {
       return interaction.reply('You do not have permission to reset the leaderboard.');
